@@ -1,0 +1,20 @@
+create database device_manager;
+use device_manager;
+create table `device`(
+	`device_id` varchar(45) not null,
+    `device_name` varchar(45) default null,
+    `alias` varchar(45) default null,
+    `online` varchar(1) default null,
+    `firmware_id` varchar(64) default null,
+    `model_id` int(11) default null,
+    `account_id` int(11) default null,
+    `location_id` varchar(16) default null,
+    `wan_info` varchar(200) default null,
+    `lan_info` varchar(100) default null,
+    `wifi_basic` varchar(100) default null,
+    `ip_address` varchar(50) default null,
+    `version` int(11) default '0',
+    `region` varchar(45) default null,
+    primary key(`device_id`) using btree
+    )ENGINE=MyISAM Default CHARSET=utf8;
+    
