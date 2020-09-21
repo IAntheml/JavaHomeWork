@@ -1,0 +1,46 @@
+redis-cli
+
+select 1(选择redis中16个库中的一个)
+
+flushdb(刷新)
+//字符串
+set test:count 1 (<test:count-1>)
+get test:count
+incr test:count
+decr test:count
+
+//哈希
+hset test:user id 1
+hset test:user username zhangsan
+hget test:user id
+hget test:user username
+
+//列表(可做出队列(左进右出)和栈（左进左出）)
+lpush test:ids 101 102 103
+llen test:ids(查看列表的长度)
+lindex test:ids 0(查看某个索引的值)
+lrange test:ids 0 2(查看某个范围的值)
+rpop test:ids(从右侧弹出一个值)
+
+//集合
+sadd test:teachers aaa bbb ccc ddd eee
+scard test:teachers(统计集合中的元素个数)
+spop test:teachers(随机弹出一个元素)
+smembers test:teachers(查看集合中还有多少个元素)
+
+//有序集合
+zadd test:students 10 aaa 20 bbb 30 ccc 40 ddd 50 eee
+zcard test:students(统计有多少个数据)
+zscore test:students ccc(查看某个元素的分数)
+zrank test:students ccc(查看元素分数排第几)
+zrange test:students 0 2(由小到大排序取0-2的数据)
+
+//全局命令
+keys #(查询当前库中有哪些key)
+keys test*(查询当前库中有哪些以test开头的key)
+type test:user(查询某个key存储的类型)
+exists test:user(查询某个key是否存在)
+del test:user(删除某个key)
+expire test:students 10 (设置一定时间后删除某个key)
+
+
