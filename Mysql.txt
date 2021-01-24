@@ -18,3 +18,174 @@ create table `device`(
     primary key(`device_id`) using btree
     )ENGINE=MyISAM Default CHARSET=utf8;
     
+    
+    package com.tplink.ignite.module.nms.wireless.domain.bean.bean;
+
+
+import com.tplink.ignite.module.nms.resource.domain.bean.Device;
+
+import javax.persistence.Column;
+import javax.persistence.Entity;
+import javax.persistence.Id;
+import javax.persistence.Table;
+import javax.persistence.Transient;
+
+
+/**
+ * Copyright (C) 2017 TP-LINK Technologies Co., Ltd. All rights reserved
+ * Author: dongxinwei
+ * Date: 2017-09-13
+ * Description:
+ */
+@Entity
+@Table(name = "cwm_config_radio")
+public class Radio {
+
+    //Long projectId, String optimizeResultId, String radioUnit, String radioChannel, int deviceAmount
+    @Id
+    @Column(name = "radioId")
+    private Long radioId;
+    @Column(name = "siteId", updatable = false)
+    private Long siteId;
+    @Column(name = "deviceIndex", updatable = false)
+    private Long deviceIndex;
+    @Column(name = "radioEnable")
+    private String radioEnable;
+    @Column(name = "radioUnit", updatable = false)
+    private String radioUnit;
+    @Column(name = "radioMode")
+    private String radioMode;
+    @Column(name = "radioChannel")
+    private String radioChannel;
+    @Column(name = "radioBandwidth")
+    private String radioBandwidth;
+    @Column(name = "radioPower")
+    private String radioPower;
+    @Column(name = "maxClientsCount")
+    private Integer maxClientsCount;
+    @Column(name = "reserve1")
+    private String deviceRadioId;
+
+    @Transient
+    private Device device;
+
+    public Long getRadioId() {
+        return radioId;
+    }
+
+    public void setRadioId(Long radioId) {
+        this.radioId = radioId;
+    }
+
+    public Long getSiteId() {
+        return siteId;
+    }
+
+    public void setSiteId(Long siteId) {
+        this.siteId = siteId;
+    }
+
+    public Device getDevice() {
+        return device;
+    }
+
+    public void setDevice(Device device) {
+        this.device = device;
+    }
+
+    public String getRadioEnable() {
+        return radioEnable;
+    }
+
+    public void setRadioEnable(String radioEnable) {
+        this.radioEnable = radioEnable;
+    }
+
+    public String getRadioUnit() {
+        return radioUnit;
+    }
+
+    public void setRadioUnit(String radioUnit) {
+        this.radioUnit = radioUnit;
+    }
+
+    public String getRadioMode() {
+        return radioMode;
+    }
+
+    public void setRadioMode(String radioMode) {
+        this.radioMode = radioMode;
+    }
+
+    public String getRadioChannel() {
+        return radioChannel;
+    }
+
+    public void setRadioChannel(String radioChannel) {
+        this.radioChannel = radioChannel;
+    }
+
+    public String getRadioBandwidth() {
+        return radioBandwidth;
+    }
+
+    public void setRadioBandwidth(String radioBandwidth) {
+        this.radioBandwidth = radioBandwidth;
+    }
+
+    public String getRadioPower() {
+        return radioPower;
+    }
+
+    public void setRadioPower(String radioPower) {
+        this.radioPower = radioPower;
+    }
+
+    public Integer getMaxClientsCount() {
+        return maxClientsCount;
+    }
+
+    public void setMaxClientsCount(Integer maxClientsCount) {
+        this.maxClientsCount = maxClientsCount;
+    }
+
+    public String getDeviceName() {
+        return device != null ? device.getDeviceName() : null;
+    }
+
+    public Long getDeviceIndex() {
+        return deviceIndex;
+    }
+
+    public void setDeviceIndex(Long deviceIndex) {
+        this.deviceIndex = deviceIndex;
+    }
+
+    public String getDeviceRadioId() {
+        return deviceRadioId;
+    }
+
+    public void setDeviceRadioId(String deviceRadioId) {
+        this.deviceRadioId = deviceRadioId;
+    }
+}
+
+CREATE TABLE `cwm_config_radio` (
+  `radioId` BIGINT(20) NOT NULL,
+  `siteId` BIGINT(20) NOT NULL,
+  `deviceIndex` BIGINT(20) NOT NULL,
+  `radioEnable` VARCHAR(5) NOT NULL,
+  `radioUnit` VARCHAR(10) NOT NULL,
+  `radioMode` VARCHAR(32) DEFAULT NULL,
+  `radioChannel` VARCHAR(5) DEFAULT NULL,
+  `radioBandwidth` VARCHAR(10) DEFAULT NULL,
+  `radioPower` VARCHAR(5) NOT NULL,
+  `maxClientsCount` INT(11) DEFAULT NULL,
+  `radioInfo` VARCHAR(1000) DEFAULT NULL,
+  `version` TINYINT(4) DEFAULT NULL,
+  `reserve1` VARCHAR(255) DEFAULT NULL,
+  `reserve2` INT(11) DEFAULT NULL,
+  PRIMARY KEY (`radioId`),
+  UNIQUE KEY `device_unit_idx` (`deviceIndex`,`radioUnit`),
+  KEY `site_idx` (`siteId`)
+)
