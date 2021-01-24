@@ -2,3 +2,11 @@ SELECT temp.`radioUnit`,temp.`radioChannel`,COUNT(*) FROM(
 SELECT `radioUnit`,`radioChannel`,`deviceIndex` FROM `cwm_config_radio`
 WHERE `deviceIndex` IN (11,12,13,14,15,16,17)) AS temp
 GROUP BY `radioUnit`,`radioChannel`;
+
+
+
+
+
+
+
+https://blog.csdn.net/weixin_44248490/article/details/106900976
