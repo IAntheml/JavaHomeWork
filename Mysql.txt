@@ -1,3 +1,105 @@
+public class RrmTimingScheduledConfig implements SchedulingConfigurer {
+
+    private ScheduledTaskRegistrar regis;
+
+    @Autowired
+    private RadioOptimizeParamsRepository radioOptimizeParamsDao;
+
+    private static final ThreadPoolExecutor POLLING_RRM_START_THREAD_POOL = new ScheduledThreadPoolExecutor(1,
+            new BasicThreadFactory.Builder().namingPattern("rrm-scheduled-pool-%d").daemon(true).build());
+
+    private final ConcurrentHashMap<Long, CronTask> projectTaskMap = new ConcurrentHashMap<>();
+
+    @Override
+    public void configureTasks(ScheduledTaskRegistrar scheduledTaskRegistrar) {
+        scheduledTaskRegistrar.setScheduler(POLLING_RRM_START_THREAD_POOL);
+        buildTask(scheduledTaskRegistrar);
+        this.regis = scheduledTaskRegistrar;
+    }
+
+    public void refresh(Long projectId) {
+        RadioOptimizeInfo updatedInfo = radioOptimizeParamsDao.findByProjectId(projectId);
+        String cronExpression = getCronExpression(updatedInfo);
+        if (cronExpression == null) {
+            projectTaskMap.remove(projectId);
+        } else {
+            projectTaskMap.replace(projectId, new CronTask(new RrmTimingExecutorTask(projectId), cronExpression));
+        }
+        regis.setCronTasksList(new ArrayList<>(projectTaskMap.values()));
+    }
+
+    @PreDestroy
+    public void destroy() {
+        this.regis.destroy();
+    }
+
+    private void buildTask(ScheduledTaskRegistrar scheduledTaskRegistrar) {
+        Iterable<RadioOptimizeInfo> all = radioOptimizeParamsDao.findAll();
+        for (RadioOptimizeInfo optimizeParams : all) {
+            if ("on".equals(optimizeParams.getTimingOptimizeEnable())) {
+                String cronExpression = getCronExpression(optimizeParams);
+                if (cronExpression == null) {
+                    return;
+                }
+                projectTaskMap.put(optimizeParams.getProjectId(),
+                        new CronTask(new RrmTimingExecutorTask(optimizeParams.getProjectId()), cronExpression));
+            }
+        }
+        scheduledTaskRegistrar.setCronTasksList(new ArrayList<>(projectTaskMap.values()));
+    }
+
+    private String getCronExpression(RadioOptimizeInfo optimizeParams) {
+        int minStartTime = 0;
+        int maxStartTime = 60;
+        int validStartTimeSpilt = 3;
+        int repeatEveSpilt = 7;
+        int validRepeatSpiltMax = 7;
+        int validRepeatSpiltMin = 1;
+        if (optimizeParams == null) {
+            return null;
+        }
+        String startTime = optimizeParams.getStartTime();
+        String repeatDate = optimizeParams.getRepeatDate();
+        String[] split = startTime.split(":");
+        //[1,2,3] 08:08:08 "[1,2,3]"
+        //10 10 2 ? ? 1,2,3,4,5,6 *
+        if (split.length != validStartTimeSpilt) {
+            return null;
+        }
+        int hour = Integer.parseInt(split[0]);
+        int minute = Integer.parseInt(split[1]);
+        int second = Integer.parseInt(split[2]);
+        if (hour >= maxStartTime || hour <= minStartTime || minute >= maxStartTime || minute <= minStartTime
+                || second >= maxStartTime || second <= minStartTime) {
+            return null;
+        }
+        String repeatDateSubstring = repeatDate.substring(repeatDate.indexOf('[') + 1, repeatDate.lastIndexOf(']'));
+        String[] repeatDateSubstringArrays = repeatDateSubstring.split(",");
+        StringBuilder repeat = new StringBuilder();
+        if (repeatDateSubstringArrays.length > repeatEveSpilt || repeatDateSubstringArrays.length <= 0) {
+            return null;
+        }
+        for (String s : repeatDateSubstringArrays) {
+            if (Integer.parseInt(s) > validRepeatSpiltMax || Integer.parseInt(s) < validRepeatSpiltMin) {
+                return null;
+            }
+        }
+        if (repeatDateSubstringArrays.length == repeatEveSpilt) {
+            repeat = new StringBuilder("*");
+        } else {
+            for (String s : repeatDateSubstringArrays) {
+                repeat.append(s).append(" ");
+            }
+        }
+        String cron = second + " " + minute + " " + hour + " " + "? " + "* " + repeat;
+        if (!CronExpression.isValidExpression(cron)) {
+            return null;
+        }
+        return cron;
+    }
+}
+
+---------------------------------------------------------------2021.1.26------------------------------------------------------------------------------
 create database device_manager;
 use device_manager;
 create table `device`(
