@@ -1,313 +1,135 @@
-SELECT temp.`radioUnit`,temp.`radioChannel`,COUNT(*) FROM(
-SELECT `radioUnit`,`radioChannel`,`deviceIndex` FROM `cwm_config_radio`
-WHERE `deviceIndex` IN (11,12,13,14,15,16,17)) AS temp
-GROUP BY `radioUnit`,`radioChannel`;
-
-
- //将RadioOptimizeParams转为下发到设备的ApmngRrm
-        Map<String, Object> protocolMap = JsonUtils.json2Map(
-                JsonUtils.bean2Json(RadioOptimizeParamsAdaptor.toApmngRrm(radioOptimizeInfo)));
-
-
-
-
-https://blog.csdn.net/weixin_44248490/article/details/106900976
-
-public class RadioOptimizeParamsAdaptor {
-
-
-    public static RadioOptimizeParamsVO toRadioOptimizeParamsVO(RadioOptimizeInfo source) {
-        if (source == null){
-            return null;
+public ApiResult startRrmOptimize(ProjectVO vo, Context context) {
+        logger.debug("startRrm " + vo.getProjectId());
+        //将射频调优参数读出来
+        RadioOptimizeInfo radioOptimizeInfo = radioOptimizeParamsDao.findByProjectId(vo.getProjectId());
+        if (radioOptimizeInfo == null) {
+            //如果没有射频调优参数
+            return new ApiResult(Errors.INVALID_PARAMS, "do not have params for radio optimize");
         }
-        return JsonUtils.json2bean(source.getRadioOptimizeInfo(),RadioOptimizeParamsVO.class);
-    }
-
-
-    public static ApmngRrm toApmngRrm(RadioOptimizeInfo source){
-        ApmngRrm apmngRrm = new ApmngRrm();
-        if (source != null && source.getRadioOptimizeInfo() != null){
-            apmngRrm = JsonUtils.json2bean(source.getRadioOptimizeInfo(),ApmngRrm.class);
+        //获取该项目下所有的设备
+        List<Device> projectDevices = deviceRepository.findAllBySiteIdAndBelongDeviceIsNull(vo.getProjectId());
+        if (projectDevices == null) {
+            return new ApiResult(Errors.SUCCESS);
         }
-        return apmngRrm;
+        List<Device> projectDevicesSupportRrm = new ArrayList<>();
+        for (Device device : projectDevices) {
+            //筛选出支持射频调优的设备
+            int deviceFeature = DeviceRedissonApi.getInstance().getDeviceFeature(vo.getProjectId(), device.getDeviceMac());
+            if (DeviceApi.supportFeature(deviceFeature, DeviceFeature.supportRrm)) {
+                logger.debug("device support rrm,mac is : " + device.getDeviceMac());
+                projectDevicesSupportRrm.add(device);
+            }
+        }
+        //如果没有支持射频调优的设备
+        if (CollectionUtils.isEmpty(projectDevicesSupportRrm)) {
+            //当前项目中，没有设备支持射频调优
+            return new ApiResult(NOT_DEVICE_SUPPORT_RRM_ERROR_CODE, "project dose not have device supports rrm");
+        }
+        List<Long> devicesIndexes = new ArrayList<>();
+        for (Device device : projectDevicesSupportRrm) {
+            List<Device> subDevices = deviceRepository.findAllBySiteIdAndBelongDevice(vo.getProjectId(), device.getId());
+            for (Device subDevice : subDevices){
+                devicesIndexes.add(subDevice.getId());
+            }
+        }
+        if (CollectionUtils.isEmpty(devicesIndexes)) {
+            //当前项目中，没有AP设备支持射频调优
+            return new ApiResult(NOT_DEVICE_SUPPORT_RRM_ERROR_CODE, "project dose not have ap device supports rrm");
+        }
+        RadioOptimizeHistory history = optimizeHistoryDao.findFirstByProjectIdOrderByOptimizeTimeDesc(vo.getProjectId());
+        if (history == null){
+            if (isProjectRadioOptimizing(vo.getProjectId())){
+                return new ApiResult(Errors.SUCCESS, new StartRrmVO(RadioOptimizeStatus.UNDERWAY.toString(),
+                        history.getOptimizeResultId()));
+            }
+        }else {
+            if (RadioOptimizeStatus.UNDERWAY.toString().equals(history.getOptimizeStatus())){
+                if (isProjectRadioOptimizing(vo.getProjectId())){
+                    return new ApiResult(Errors.SUCCESS, new StartRrmVO(RadioOptimizeStatus.UNDERWAY.toString(),
+                            history.getOptimizeResultId()));
+                }else {
+                    logger.debug("redis have no rrm message but mysql has");
+                    history.setOptimizeStatus(RadioOptimizeStatus.FINISH.toString());
+                    optimizeHistoryDao.save(history);
+                }
+            }else {
+                if (isProjectRadioOptimizing(vo.getProjectId())){
+                    return new ApiResult(Errors.SUCCESS, new StartRrmVO(RadioOptimizeStatus.UNDERWAY.toString(),
+                            history.getOptimizeResultId()));
+                }
+            }
+        }
+        String optimizeResultId = UUID.randomUUID().toString().replaceAll("-", "").substring(0, 5)
+                + vo.getProjectId();
+        //创建projectDeviceStatusMap存储项目内设备的调优状态及调优时间
+        setProjectRadioOptimizingFlag(vo.getProjectId(), projectDevicesSupportRrm, optimizeResultId, devicesIndexes);
+        //将RadioOptimizeParams转为下发到设备的ApmngRrm
+        RadioProtocolSet radioProtocolSet = new RadioProtocolSet();
+        radioProtocolSet.setMethod("set");
+        radioProtocolSet.setApmngRrm(RadioOptimizeParamsAdaptor.toApmngRrm(radioOptimizeInfo));
+        Map<String, Object> protocolMap = JsonUtils.json2Map(JsonUtils.bean2Json(radioProtocolSet));
+        logger.debug("send to device's message is :" + protocolMap);
+        for (Device device : projectDevicesSupportRrm) {
+            logger.debug(device.getDeviceId() + protocolMap.toString());
+            ApiResult apiResult = passthrough.post(device.getDeviceId(), protocolMap);
+            if (Errors.SUCCESS.getErrorCode() != apiResult.getErrorCode()) {
+                redissonClient.getMap(RrmConstant.REDIS_KEY_PREFIX_OPTIMIZE_PROJECT_PREFIX
+                        + vo.getProjectId()).delete();
+                return new ApiResult(apiResult.getErrorCode(), apiResult.getMessage());
+            }
+        }
+        //写入数据库的调优记录表，调优状态为"underway"
+        optimizeHistoryDao.save(new RadioOptimizeHistory(vo.getProjectId(), optimizeResultId, context.getCloudUsername()
+                , RadioOptimizeType.IMMEDIATELY.toString(), RadioOptimizeStatus.UNDERWAY.toString()
+                , Instant.now().toEpochMilli()));
+        saveRrmProjectId(vo.getProjectId());
+        return new ApiResult(Errors.SUCCESS, new StartRrmVO(RadioOptimizeStatus.UNDERWAY.toString(),
+                optimizeResultId));
     }
-
-    public static RadioOptimizeInfo toRadioOptimizeParams(RadioOptimizeParamsVO vo) {
-        RadioOptimizeInfo radioOptimizeInfo = new RadioOptimizeInfo();
-        radioOptimizeInfo.setProjectId(vo.getProjectId());
-        radioOptimizeInfo.setTimingOptimizeEnable(vo.getTimingParams().getTimingOptimizeEnable());
-        radioOptimizeInfo.setRepeatDate(vo.getTimingParams().getRepeatDate().toString());
-        radioOptimizeInfo.setStartTime(vo.getTimingParams().getStartTime());
-        radioOptimizeInfo.setRadioOptimizeInfo(JsonUtils.bean2Json(vo.getRrmOptimizeParams()));
-        return radioOptimizeInfo;
+    
+    
+    ---------------------------------------------------------------------------------------------------------
+        private void updateOptimizeProgress(Long projectId, String deviceMac, String status) {
+        String redisKey = Constant.REDIS_KEY_PREFIX_OPTIMIZE_PROJECT_PREFIX + projectId;
+        RMap<String, Object> projectDeviceStatusMap = redissonClient.getMap(redisKey);
+        if (CollectionUtils.isEmpty(projectDeviceStatusMap)) {
+            //当前项目不在射频优化状态
+            logger.info("project : " + projectId + " is not in optimizing");
+            return;
+        }
+        Object deviceStatusTimeMap = projectDeviceStatusMap.get(deviceMac);
+        if (deviceStatusTimeMap == null) {
+            //设备不支持射频同步
+            logger.info("device : " + deviceMac + " is not support rrm");
+            return;
+        }
+        logger.debug("project:" + projectId + "update device 's optimize progress device:"
+                + deviceMac + ",status:" + status);
+        Set deviceStatusSet = ((Map) deviceStatusTimeMap).keySet();
+        if (deviceStatusSet.size() != 1) {
+            return;
+        }
+        //拿到旧的状态:状态定义（射频调优开始，射频调优结束，射频拉取结束）
+        String oldStatus = (String) deviceStatusSet.iterator().next();
+        if (RADIO_OPTIMIZE_STATUS_START.equals(status) && RADIO_OPTIMIZE_STATUS_NOT_START.equals(oldStatus)){
+            projectDeviceStatusMap.put(deviceMac, new HashMap<String, Long>().put(RADIO_OPTIMIZE_STATUS_START,
+                    Instant.now().toEpochMilli()));
+        }
+        if (RADIO_OPTIMIZE_STATUS_FINISH.equals(status)) {
+            //更新状态并检查是否所有设备都已经完成射频调优
+            if (RADIO_OPTIMIZE_STATUS_NOT_START.equals(oldStatus) || RADIO_OPTIMIZE_STATUS_START.equals(oldStatus)) {
+                projectDeviceStatusMap.put(deviceMac
+                        , new HashMap<String, Long>().put(RADIO_OPTIMIZE_STATUS_FINISH, Instant.now().toEpochMilli()));
+            }
+        }
+        //在收到射频修改消息的时候也判断是否调优完成，完成之后取消任务并生成结果。
+        if (RADIO_OPTIMIZE_STATUS_CONFIG_SYNC.equals(status)) {
+            //更新状态并检查是否所有设备都已经完成射频拉取
+            if (RADIO_OPTIMIZE_STATUS_NOT_START.equals(oldStatus) || RADIO_OPTIMIZE_STATUS_START.equals(oldStatus)
+                    || RADIO_OPTIMIZE_STATUS_FINISH.equals(oldStatus)) {
+                projectDeviceStatusMap.put(deviceMac
+                        , new HashMap<String, Long>().put(RADIO_OPTIMIZE_STATUS_CONFIG_SYNC,
+                                Instant.now().toEpochMilli()));
+            }
+        }
     }
-}
-
-
-@Entity
-@Table(name = "radio_optimize_params")
-public class RadioOptimizeInfo {
-
-    @Id
-    @Column(name = "project_id")
-    private Long projectId;
-
-    @Column(name = "time_optimize_enable")
-    private String timingOptimizeEnable;
-
-    @Column(name = "repeat_date")
-    private String repeatDate;
-
-    @Column(name = "start_time")
-    private String startTime;
-
-    @Column(name = "radio_optimize_info")
-    private String radioOptimizeInfo;
-
-    public Long getProjectId() {
-        return projectId;
-    }
-
-    public void setProjectId(Long projectId) {
-        this.projectId = projectId;
-    }
-
-    public String getRadioOptimizeInfo() {
-        return radioOptimizeInfo;
-    }
-
-    public void setRadioOptimizeInfo(String radioOptimizeInfo) {
-        this.radioOptimizeInfo = radioOptimizeInfo;
-    }
-
-    public String getTimingOptimizeEnable() {
-        return timingOptimizeEnable;
-    }
-
-    public void setTimingOptimizeEnable(String timingOptimizeEnable) {
-        this.timingOptimizeEnable = timingOptimizeEnable;
-    }
-
-    public String getRepeatDate() {
-        return repeatDate;
-    }
-
-    public void setRepeatDate(String repeatDate) {
-        this.repeatDate = repeatDate;
-    }
-
-    public String getStartTime() {
-        return startTime;
-    }
-
-    public void setStartTime(String startTime) {
-        this.startTime = startTime;
-    }
-}
-
-public class RadioOptimizeParamsVO {
-    @NotNull(message = "INVALID_PARAMS")
-    private Long projectId;
-
-    @Valid
-    private RrmOptimizeParams rrmOptimizeParams;
-
-    @Valid
-    private TimingParams timingParams;
-
-    public Long getProjectId() {
-        return projectId;
-    }
-
-    public void setProjectId(Long projectId) {
-        this.projectId = projectId;
-    }
-
-    public RrmOptimizeParams getRrmOptimizeParams() {
-        return rrmOptimizeParams;
-    }
-
-    public void setRrmOptimizeParams(RrmOptimizeParams rrmOptimizeParams) {
-        this.rrmOptimizeParams = rrmOptimizeParams;
-    }
-
-    public TimingParams getTimingParams() {
-        return timingParams;
-    }
-
-    public void setTimingParams(TimingParams timingParams) {
-        this.timingParams = timingParams;
-    }
-
-    @Override
-    public String toString() {
-        return ToStringBuilder.reflectionToString(this);
-    }
-
-}
-
-public class RrmOptimizeParams {
-
-    @JsonProperty("bw2g")
-    @NotNull(message = "INVALID_PARAMS")
-    @Pattern(regexp = "^(auto)|(20M)$", message = "INVALID_PARAMS")
-    private String radioChannel2g;
-
-    @JsonProperty("chnl2gSet")
-    @NotNull(message = "INVALID_PARAMS")
-    private List<String> channel2gSet;
-
-    @JsonProperty("bw5g")
-    @NotNull(message = "INVALID_PARAMS")
-    @Pattern(regexp = "^(auto)|(20M)|(40M)$", message = "INVALID_PARAMS")
-    private String radioChannel5g;
-
-    @JsonProperty("chnl5gSet")
-    @NotNull(message = "INVALID_PARAMS")
-    private List<String> channel5gSet;
-
-    @JsonProperty("pwrEnable")
-    @NotNull(message = "INVALID_PARAMS")
-    @Pattern(regexp = "^(on)|(off)$", message = "INVALID_PARAMS")
-    private String powerEnable;
-
-    @JsonProperty("pwrThreshold")
-    @Range(min = -80, max = -50, message = "INVALID_PARAMS")
-    private int powerThreshold;
-
-    @JsonProperty("pwrMaxPwr")
-    @Range(min = 10, max = 50, message = "INVALID_PARAMS")
-    private int maxPower;
-
-    @JsonProperty("pwrMinPwr")
-    @Range(min = 3, max = 30, message = "INVALID_PARAMS")
-    private int minPower;
-
-    public String getRadioChannel2g() {
-        return radioChannel2g;
-    }
-
-    public void setRadioChannel2g(String radioChannel2g) {
-        this.radioChannel2g = radioChannel2g;
-    }
-
-    public List<String> getChannel2gSet() {
-        return channel2gSet;
-    }
-
-    public void setChannel2gSet(List<String> channel2gSet) {
-        this.channel2gSet = channel2gSet;
-    }
-
-    public String getRadioChannel5g() {
-        return radioChannel5g;
-    }
-
-    public void setRadioChannel5g(String radioChannel5g) {
-        this.radioChannel5g = radioChannel5g;
-    }
-
-    public List<String> getChannel5gSet() {
-        return channel5gSet;
-    }
-
-    public void setChannel5gSet(List<String> channel5gSet) {
-        this.channel5gSet = channel5gSet;
-    }
-
-    public String getPowerEnable() {
-        return powerEnable;
-    }
-
-    public void setPowerEnable(String powerEnable) {
-        this.powerEnable = powerEnable;
-    }
-
-    public int getPowerThreshold() {
-        return powerThreshold;
-    }
-
-    public void setPowerThreshold(int powerThreshold) {
-        this.powerThreshold = powerThreshold;
-    }
-
-    public int getMaxPower() {
-        return maxPower;
-    }
-
-    public void setMaxPower(int maxPower) {
-        this.maxPower = maxPower;
-    }
-
-    public int getMinPower() {
-        return minPower;
-    }
-
-    public void setMinPower(int minPower) {
-        this.minPower = minPower;
-    }
-}
-
-public class TimingParams {
-
-    @JsonProperty("enable")
-    @NotNull(message = "INVALID_PARAMS")
-    @Pattern(regexp = "^(on)|(off)$", message = "INVALID_PARAMS")
-    private String timingOptimizeEnable;
-
-    @JsonProperty("repeatDate")
-    private List<Integer> repeatDate;
-
-    @JsonProperty("startTime")
-    @Pattern(regexp = "^([0-1]?[0-9]|2[0-3]):([0-5][0-9]):([0-5][0-9])$",message = "INVALID_PARAMS")
-    private String startTime;
-
-    public String getTimingOptimizeEnable() {
-        return timingOptimizeEnable;
-    }
-
-    public void setTimingOptimizeEnable(String timingOptimizeEnable) {
-        this.timingOptimizeEnable = timingOptimizeEnable;
-    }
-
-    public List<Integer> getRepeatDate() {
-        return repeatDate;
-    }
-
-    public void setRepeatDate(List<Integer> repeatDate) {
-        this.repeatDate = repeatDate;
-    }
-
-    public String getStartTime() {
-        return startTime;
-    }
-
-    public void setStartTime(String startTime) {
-        this.startTime = startTime;
-    }
-}
-
-public class ApmngRrm {
-
-    @Valid
-    @JsonProperty("settings")
-    private RrmSettings rrmSettings;
-
-    public RrmSettings getRrmSettings() {
-        return rrmSettings;
-    }
-
-    public void setRrmSettings(RrmSettings rrmSettings) {
-        this.rrmSettings = rrmSettings;
-    }
-
-    @Override
-    public String toString() {
-        return ToStringBuilder.reflectionToString(this);
-    }
-
-
-}
-
-
-
