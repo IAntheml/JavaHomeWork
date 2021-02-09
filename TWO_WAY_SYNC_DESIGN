@@ -6,3 +6,7 @@ congfig-server：检查一遍筛选下发设备的逻辑、下发配置slp下发
 msg-center：设备本地修改配置上报更改消息时只负责转发；设备上报上线消息时，将上线消息中的moduleConfigSyncId添加转发到config-server。
 congfig-server：设备上报修改配置通知、设备上线后上报上线消息后，对比moduleConfigId，拉取取变化的moduleConfigId对应模块的配置对比并更新配置下发；收到转发到达的设备上报上线消息时，负责
 根据处理设备-模块配置是否修改，拉取修改的设备-模块配置对比并更新。
+
+
+
+spring boot课程
