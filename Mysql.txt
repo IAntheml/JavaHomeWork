@@ -291,3 +291,4 @@ CREATE TABLE `cwm_config_radio` (
   UNIQUE KEY `device_unit_idx` (`deviceIndex`,`radioUnit`),
   KEY `site_idx` (`siteId`)
 )
+111
