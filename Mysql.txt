@@ -205,3 +205,103 @@ public class DeviceDao extends BaseDao<Device> {
 
         return allDevice;
     }
+    
+    
+    package com.tplink.ignite.module.nms.wireless.dao;
+
+import com.tplink.ignite.jeelib.dao.BaseRepository;
+import com.tplink.ignite.module.nms.wireless.domain.bean.bean.NmsDeviceConfigBindRelation;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.util.List;
+import java.util.Map;
+
+/**
+ * @description:
+ * @author: smb_llh
+ * @time: 2021/2/18 16:53
+ */
+public interface NmsDeviceConfigBindRelationRepository extends BaseRepository<NmsDeviceConfigBindRelation, Long> {
+
+    NmsDeviceConfigBindRelation findByDeviceIndexAndConfigModule(Long deviceIndex, String configModule);
+
+    NmsDeviceConfigBindRelation findByDeviceIndexAndConfigModuleAndProjectId(Long deviceIndex, String configModule, Long projectId);
+
+    NmsDeviceConfigBindRelation findByDeviceIndexAndConfigModuleAndDeviceEntryId(Long deviceIndex, String configModule, String deviceEntryId);
+
+    List<NmsDeviceConfigBindRelation> findByProjectIdAndDeviceIndexAndAndConfigModule(Long projectId, Long deviceIndex, String configModule);
+
+    List<NmsDeviceConfigBindRelation> findByProjectIdAndConfigModuleAndModuleEntryId(Long projectId, String configModule, Long moduleEntryId);
+
+    Long deleteByProjectIdAndConfigModuleAndModuleEntryId(Long projectId, String configModule, Long moduleEntryId);
+
+    @Query(value = "select n.deviceEntryId from NmsDeviceConfigBindRelation as n " +
+            "where n.deviceIndex= :deviceIndex AND n.moduleEntryId IN :freeStrategyIds")
+    List<Long> findDeviceEntryIdByDeviceIndexAndModuleEntryIds(@Param("deviceIndex") Long deviceIndex, @Param("freeStrategyIds") List<Long> freeStrategyIds);
+
+    @Query(value = "select n.deviceEntryId from NmsDeviceConfigBindRelation as n " +
+            "where n.deviceIndex= :deviceIndex AND n.moduleEntryId = :freeStrategyId")
+    Long findDeviceEntryIdByDeviceIndexAndModuleEntryId(@Param("deviceIndex") Long deviceIndex, @Param("freeStrategyId") Long freeStrategyId);
+
+    /**
+     * 根据云端配置条目ids查找所有绑定关系
+     * @param configModule 模块
+     * @param moduleEntryIds 云端条目ids
+     * @return 绑定关系列表
+     */
+    List<NmsDeviceConfigBindRelation> findAllByConfigModuleAndModuleEntryId(String configModule,List<Long> moduleEntryIds);
+
+    List<NmsDeviceConfigBindRelation> findByModuleEntryId(Long moduleEntryId);
+
+    /**
+     * 通过项目id、模块、配置条目id获取模块条目id对应的设备数量。
+     * @param projectId 项目id
+     * @param configModule 模块
+     * @param moduleEntryIds 配置条目id
+     * @return
+     */
+    Map<Long,Integer> findDeviceAmountByProjectIdAndConfigModuleAndModuleEntryIds(Long projectId, String configModule, List<Long> moduleEntryIds);
+
+    /**
+     *  查询认证参数的设备信息
+     * @param projectId 项目id
+     * @param configModule 模块
+     * @param moduleEntryIds 条目id
+     * @return
+     */
+    @Query(value = "select n.deviceIndex from NmsDeviceConfigBindRelation as n where n.projectId = :projectId " +
+            "AND n.moduleEntryId IN :moduleEntryIds AND n.configModule = :configModule")
+    List<Long> findPortalGlobalDeviceIndexByProjectIdAndModuleEntryId(Long projectId, String configModule, List<Long> moduleEntryIds);
+
+    /**
+     * 查询配置条目绑定的设备index列表
+     * @param projectId 项目id
+     * @param configModule 配置模块
+     * @param moduleEntryId 配置条目id
+     * @return
+     */
+    @Query(value = "select n.deviceIndex from NmsDeviceConfigBindRelation as n where n.projectId = :projectId " +
+            "AND n.moduleEntryId = :moduleEntryId AND n.configModule = :configModule")
+    List<Long> findDeviceIndexesByProjectIdAndConfigModuleAndModuleEntryId(Long projectId, String configModule, Long moduleEntryId);
+
+    /**
+     *
+     * @param projectId 项目id
+     * @param configModule 配置模块
+     * @param moduleEntryId 配置条目id
+     * @param deviceIndexes 设备索引列表
+     * @return 删除条目数量
+     */
+    Integer deleteByProjectIdAndConfigModuleAndModuleEntryIdAndDeviceIndexIn(Long projectId,String configModule, Long moduleEntryId,List<Long> deviceIndexes);
+
+    /**
+     * 根据条目ids拿到<条目id,设备索引列表>
+     * @param newVersionIds 条目列表
+     * @return <条目id,设备索引列表>
+     */
+    Map<Long,List<Long>> findEntryIdWithDeviceIndexesByEntryIds(List<Long> newVersionIds);
+
+    List<NmsDeviceConfigBindRelation> findByProjectIdAndModuleEntryIdIn(Long projectId , List<Long> moduleEntryIds);
+}
+
