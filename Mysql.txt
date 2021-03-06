@@ -1,294 +1,207 @@
-public class RrmTimingScheduledConfig implements SchedulingConfigurer {
-
-    private ScheduledTaskRegistrar regis;
-
+public class DeviceDao extends BaseDao<Device> {
+    private SqlResultHandle deviceResultHandle = DeviceResultHandle.getInstance();
+    private String selectDeviceSql = DeviceResultHandle.getInstance().getSelectDeviceSql();
+    @PersistenceContext
+    EntityManager entityManager;
     @Autowired
-    private RadioOptimizeParamsRepository radioOptimizeParamsDao;
+    DeviceRepository deviceRepository;
+    @Autowired
+    CpeDeviceRepository cpeDeviceRepository;
+    @Autowired
+    DeviceConfigDao deviceConfigDao;
 
-    private static final ThreadPoolExecutor POLLING_RRM_START_THREAD_POOL = new ScheduledThreadPoolExecutor(1,
-            new BasicThreadFactory.Builder().namingPattern("rrm-scheduled-pool-%d").daemon(true).build());
-
-    private final ConcurrentHashMap<Long, CronTask> projectTaskMap = new ConcurrentHashMap<>();
-
-    @Override
-    public void configureTasks(ScheduledTaskRegistrar scheduledTaskRegistrar) {
-        scheduledTaskRegistrar.setScheduler(POLLING_RRM_START_THREAD_POOL);
-        buildTask(scheduledTaskRegistrar);
-        this.regis = scheduledTaskRegistrar;
+    public DeviceDao() {
     }
 
-    public void refresh(Long projectId) {
-        RadioOptimizeInfo updatedInfo = radioOptimizeParamsDao.findByProjectId(projectId);
-        String cronExpression = getCronExpression(updatedInfo);
-        if (cronExpression == null) {
-            projectTaskMap.remove(projectId);
-        } else {
-            projectTaskMap.replace(projectId, new CronTask(new RrmTimingExecutorTask(projectId), cronExpression));
-        }
-        regis.setCronTasksList(new ArrayList<>(projectTaskMap.values()));
+    public void add(Device device) {
+        this.deviceRepository.save(device);
     }
 
-    @PreDestroy
-    public void destroy() {
-        this.regis.destroy();
+    public Session getSession() {
+        return (Session)this.entityManager.unwrap(Session.class);
     }
 
-    private void buildTask(ScheduledTaskRegistrar scheduledTaskRegistrar) {
-        Iterable<RadioOptimizeInfo> all = radioOptimizeParamsDao.findAll();
-        for (RadioOptimizeInfo optimizeParams : all) {
-            if ("on".equals(optimizeParams.getTimingOptimizeEnable())) {
-                String cronExpression = getCronExpression(optimizeParams);
-                if (cronExpression == null) {
-                    return;
-                }
-                projectTaskMap.put(optimizeParams.getProjectId(),
-                        new CronTask(new RrmTimingExecutorTask(optimizeParams.getProjectId()), cronExpression));
-            }
-        }
-        scheduledTaskRegistrar.setCronTasksList(new ArrayList<>(projectTaskMap.values()));
+    public long countByDeviceType(String type) {
+        return this.countByFilters((List)null, Arrays.asList(new QueryCondition("deviceType", type, QueryType.like)));
     }
 
-    private String getCronExpression(RadioOptimizeInfo optimizeParams) {
-        int minStartTime = 0;
-        int maxStartTime = 60;
-        int validStartTimeSpilt = 3;
-        int repeatEveSpilt = 7;
-        int validRepeatSpiltMax = 7;
-        int validRepeatSpiltMin = 1;
-        if (optimizeParams == null) {
-            return null;
-        }
-        String startTime = optimizeParams.getStartTime();
-        String repeatDate = optimizeParams.getRepeatDate();
-        String[] split = startTime.split(":");
-        //[1,2,3] 08:08:08 "[1,2,3]"
-        //10 10 2 ? ? 1,2,3,4,5,6 *
-        if (split.length != validStartTimeSpilt) {
-            return null;
-        }
-        int hour = Integer.parseInt(split[0]);
-        int minute = Integer.parseInt(split[1]);
-        int second = Integer.parseInt(split[2]);
-        if (hour >= maxStartTime || hour <= minStartTime || minute >= maxStartTime || minute <= minStartTime
-                || second >= maxStartTime || second <= minStartTime) {
-            return null;
-        }
-        String repeatDateSubstring = repeatDate.substring(repeatDate.indexOf('[') + 1, repeatDate.lastIndexOf(']'));
-        String[] repeatDateSubstringArrays = repeatDateSubstring.split(",");
-        StringBuilder repeat = new StringBuilder();
-        if (repeatDateSubstringArrays.length > repeatEveSpilt || repeatDateSubstringArrays.length <= 0) {
-            return null;
-        }
-        for (String s : repeatDateSubstringArrays) {
-            if (Integer.parseInt(s) > validRepeatSpiltMax || Integer.parseInt(s) < validRepeatSpiltMin) {
+    public List<Long> findSiteIdList() {
+        Session session = this.getSession();
+        String hql = "select distinct d.siteId from com.tplink.ignite.module.nms.resource.domain.bean.Device d";
+        Query query = session.createQuery(hql);
+        List<Long> ids = query.list();
+        return ids;
+    }
+
+    public Device findBySiteIdAndMac(final Long siteId, final String deviceMac) {
+        String sql = this.selectDeviceSql + "where d.siteId = ? and d.deviceMac = ?";
+        List<Device> devices = this.findBySql(this.entityManager, sql, this.deviceResultHandle, new Object[]{siteId, deviceMac});
+        return CollectionUtils.isEmpty(devices) ? null : (Device)devices.get(0);
+    }
+
+    public Long findParentDeviceIndexBySiteIdAndMac(final Long siteId, final String mac) {
+        Session session = this.getSession();
+        String hql = "select d.id from com.tplink.ignite.module.nms.resource.domain.bean.Device d where d.siteId = :siteId and d.deviceMac = :deviceMac and d.belongDevice is null";
+        Query query = session.createQuery(hql);
+        query.setParameter("siteId", siteId);
+        query.setParameter("deviceMac", mac);
+        List<Long> ids = query.list();
+        return CollectionUtils.isEmpty(ids) ? null : (Long)ids.get(0);
+    }
+
+    public Device findBySiteIdAndMacAndBelongMac(final Long siteId, final String deviceMac, final String belongDeviceMac) {
+        Long belongDeviceIndex = null;
+        if (!StringUtils.isEmpty(belongDeviceMac)) {
+            belongDeviceIndex = this.findParentDeviceIndexBySiteIdAndMac(siteId, belongDeviceMac);
+            if (belongDeviceIndex == null) {
                 return null;
             }
         }
-        if (repeatDateSubstringArrays.length == repeatEveSpilt) {
-            repeat = new StringBuilder("*");
+
+        String sql = this.selectDeviceSql;
+        sql = sql + "where d.siteId = ? and d.deviceMac = ? and ";
+        if (StringUtils.isEmpty(belongDeviceMac)) {
+            sql = sql + "d.belongDevice is null";
         } else {
-            for (String s : repeatDateSubstringArrays) {
-                repeat.append(s).append(" ");
+            sql = sql + "d.belongDevice = ?";
+        }
+
+        List<Object> params = new ArrayList();
+        params.add(siteId);
+        params.add(deviceMac);
+        if (!StringUtils.isEmpty(belongDeviceMac)) {
+            params.add(belongDeviceIndex);
+        }
+
+        List<Device> devices = this.findBySql(this.entityManager, sql, this.deviceResultHandle, params.toArray());
+        return CollectionUtils.isEmpty(devices) ? null : (Device)devices.get(0);
+    }
+
+    public Long findDeviceIndexBySiteIdAndDeviceId(final Long siteId, final String deviceId) {
+        Session session = this.getSession();
+        String hql = "select d.id from com.tplink.ignite.module.nms.resource.domain.bean.Device d where d.siteId = :siteId and d.deviceId = :deviceId";
+        Query query = session.createQuery(hql);
+        query.setParameter("siteId", siteId);
+        query.setParameter("deviceId", deviceId);
+        List<Long> indexList = query.list();
+        return CollectionUtils.isEmpty(indexList) ? null : (Long)indexList.get(0);
+    }
+
+    public List<Long> findDeviceIndexBySiteIdAndBelongDevice(final Long siteId, final Long belongDeviceIndex) {
+        String hql = "select distinct d.id from com.tplink.ignite.module.nms.resource.domain.bean.Device d where d.belongDevice = :belongDeviceIndex and d.siteId = :siteId";
+        return this.getSession().createQuery(hql).setParameter("belongDeviceIndex", belongDeviceIndex).setParameter("siteId", siteId).list();
+    }
+
+    public List<Long> findDeviceGroupBySiteIdAndBelongDevice(final Long siteId, final Long belongDevice) {
+        Session session = this.getSession();
+        String hql = "select distinct d.group from com.tplink.ignite.module.nms.resource.domain.bean.Device d where d.belongDevice = :belongDevice and d.siteId = :siteId";
+        Query query = session.createQuery(hql);
+        query.setParameter("belongDevice", belongDevice);
+        query.setParameter("siteId", siteId);
+        List<Long> groupIds = query.list();
+        return groupIds;
+    }
+
+    public List<Device> findBySiteIdAndGroupIdAndBelongDevice(Long siteId, Long groupId, Long belongDevice) {
+        String sql = this.selectDeviceSql + "where d.siteId = ? and d.deviceGroup = ? and d.belongDevice = ?";
+        return this.findBySql(this.entityManager, sql, this.deviceResultHandle, new Object[]{siteId, groupId, belongDevice});
+    }
+
+    public List<Device> findBySiteId(Long siteId) {
+        String sql = this.selectDeviceSql + "where d.siteId = ?";
+        return this.findBySql(this.entityManager, sql, this.deviceResultHandle, new Object[]{siteId});
+    }
+
+    public List<Device> findBySiteIdAndDeviceMac(Long siteId, String deviceMac) {
+        String sql = this.selectDeviceSql + "where d.siteId = ? and deviceMac = ?";
+        return this.findBySql(this.entityManager, sql, this.deviceResultHandle, new Object[]{siteId, deviceMac});
+    }
+
+    public List<Device> findBySiteIdAndDeviceMacIn(Long siteId, List<String> deviceMacs) {
+        String hql = this.selectDeviceSql + "where d.siteId = (:siteId) and d.deviceMac in (:deviceMacs)";
+        Session session = this.getSession();
+        List<Device> allDevice = new ArrayList();
+        List<List<String>> macGroups = DeviceUtil.split(deviceMacs, 500);
+        if (!CollectionUtils.isEmpty(macGroups)) {
+            Iterator var7 = macGroups.iterator();
+
+            while(var7.hasNext()) {
+                List<String> macGroup = (List)var7.next();
+                Query query = session.createSQLQuery(hql);
+                query.setParameterList("deviceMacs", macGroup);
+                query.setParameter("siteId", siteId);
+                List devices = query.list();
+                allDevice.addAll(this.deviceResultHandle.handleSqlResult(devices));
             }
         }
-        String cron = second + " " + minute + " " + hour + " " + "? " + "* " + repeat;
-        if (!CronExpression.isValidExpression(cron)) {
-            return null;
+
+        return allDevice;
+    }
+
+    public List<Device> findAllBySiteIdAndStatus(Long siteId, Integer status) {
+        String sql = this.selectDeviceSql + "where d.siteId = ? and d.status = ?";
+        return this.findBySql(this.entityManager, sql, this.deviceResultHandle, new Object[]{siteId, status});
+    }
+
+    public List<Device> findAllBySiteIdAndStatusIn(Long siteId, List<Integer> statusList) {
+        return this.deviceRepository.findAllBySiteIdAndStatusIn(siteId, statusList);
+    }
+
+    public List<Device> findAllBySiteIdAndDeviceMacIn(Long projectId, List<String> macList) {
+        return this.deviceRepository.findAllBySiteIdAndDeviceMacIn(projectId, macList);
+    }
+
+    public List<Device> findAllByDeviceMacIn(List<String> macList) {
+        return this.deviceRepository.findAllByDeviceMacIn(macList);
+    }
+
+    public List<String> findDeviceMacByDeviceStatusAndDeviceMacIn(Integer deviceStatus, List<String> deviceMacs) {
+        Session session = this.getSession();
+        String hql = "select distinct d.deviceMac from com.tplink.ignite.module.nms.resource.domain.bean.Device d where d.status = (:status) and d.deviceMac in (:deviceMacs)";
+        Query query = session.createQuery(hql);
+        query.setParameter("status", deviceStatus);
+        query.setParameterList("deviceMacs", deviceMacs);
+        List<String> deviceMacList = query.list();
+        return deviceMacList;
+    }
+
+    public List<String> findDeviceMacByDeviceMacIn(List<String> deviceMacs) {
+        Session session = this.getSession();
+        String hql = "select distinct d.deviceMac from com.tplink.ignite.module.nms.resource.domain.bean.Device d where d.deviceMac in (:deviceMacs)";
+        Query query = session.createQuery(hql);
+        query.setParameterList("deviceMacs", deviceMacs);
+        List<String> deviceMacList = query.list();
+        return deviceMacList;
+    }
+
+    public List<Device> findBySiteIdAndGroupId(Long siteId, Long groupId) {
+        String sql = this.selectDeviceSql + "where d.siteId = ? and d.deviceGroup = ?";
+        return this.findBySql(this.entityManager, sql, this.deviceResultHandle, new Object[]{siteId, groupId});
+    }
+
+    public Device findBySiteIdAndDeviceIndex(Long siteId, Long deviceIndex) {
+        String sql = this.selectDeviceSql + "where d.siteId = ? and d.id = ?";
+        List<Device> devices = this.findBySql(this.entityManager, sql, this.deviceResultHandle, new Object[]{siteId, deviceIndex});
+        return CollectionUtils.isEmpty(devices) ? null : (Device)devices.get(0);
+    }
+
+    public List<Device> findBySiteIdAndDeviceIndex(final Long siteId, final List<Long> deviceIndex) {
+        String hql = this.selectDeviceSql + "where d.id in (:idList) and d.siteId = (:siteId)";
+        Session session = this.getSession();
+        List<Device> allDevice = new ArrayList();
+        List<List<Long>> idGroups = DeviceUtil.splitLongList(deviceIndex, 500);
+        if (!CollectionUtils.isEmpty(idGroups)) {
+            Iterator var7 = idGroups.iterator();
+
+            while(var7.hasNext()) {
+                List<Long> idGroup = (List)var7.next();
+                Query query = session.createSQLQuery(hql);
+                query.setParameterList("idList", idGroup);
+                query.setParameter("siteId", siteId);
+                List devices = query.list();
+                allDevice.addAll(this.deviceResultHandle.handleSqlResult(devices));
+            }
         }
-        return cron;
+
+        return allDevice;
     }
-}
-
----------------------------------------------------------------2021.1.26------------------------------------------------------------------------------
-create database device_manager;
-use device_manager;
-create table `device`(
-	`device_id` varchar(45) not null,
-    `device_name` varchar(45) default null,
-    `alias` varchar(45) default null,
-    `online` varchar(1) default null,
-    `firmware_id` varchar(64) default null,
-    `model_id` int(11) default null,
-    `account_id` int(11) default null,
-    `location_id` varchar(16) default null,
-    `wan_info` varchar(200) default null,
-    `lan_info` varchar(100) default null,
-    `wifi_basic` varchar(100) default null,
-    `ip_address` varchar(50) default null,
-    `version` int(11) default '0',
-    `region` varchar(45) default null,
-    primary key(`device_id`) using btree
-    )ENGINE=MyISAM Default CHARSET=utf8;
-    
-    
-    package com.tplink.ignite.module.nms.wireless.domain.bean.bean;
-
-
-import com.tplink.ignite.module.nms.resource.domain.bean.Device;
-
-import javax.persistence.Column;
-import javax.persistence.Entity;
-import javax.persistence.Id;
-import javax.persistence.Table;
-import javax.persistence.Transient;
-
-
-/**
- * Copyright (C) 2017 TP-LINK Technologies Co., Ltd. All rights reserved
- * Author: dongxinwei
- * Date: 2017-09-13
- * Description:
- */
-@Entity
-@Table(name = "cwm_config_radio")
-public class Radio {
-
-    //Long projectId, String optimizeResultId, String radioUnit, String radioChannel, int deviceAmount
-    @Id
-    @Column(name = "radioId")
-    private Long radioId;
-    @Column(name = "siteId", updatable = false)
-    private Long siteId;
-    @Column(name = "deviceIndex", updatable = false)
-    private Long deviceIndex;
-    @Column(name = "radioEnable")
-    private String radioEnable;
-    @Column(name = "radioUnit", updatable = false)
-    private String radioUnit;
-    @Column(name = "radioMode")
-    private String radioMode;
-    @Column(name = "radioChannel")
-    private String radioChannel;
-    @Column(name = "radioBandwidth")
-    private String radioBandwidth;
-    @Column(name = "radioPower")
-    private String radioPower;
-    @Column(name = "maxClientsCount")
-    private Integer maxClientsCount;
-    @Column(name = "reserve1")
-    private String deviceRadioId;
-
-    @Transient
-    private Device device;
-
-    public Long getRadioId() {
-        return radioId;
-    }
-
-    public void setRadioId(Long radioId) {
-        this.radioId = radioId;
-    }
-
-    public Long getSiteId() {
-        return siteId;
-    }
-
-    public void setSiteId(Long siteId) {
-        this.siteId = siteId;
-    }
-
-    public Device getDevice() {
-        return device;
-    }
-
-    public void setDevice(Device device) {
-        this.device = device;
-    }
-
-    public String getRadioEnable() {
-        return radioEnable;
-    }
-
-    public void setRadioEnable(String radioEnable) {
-        this.radioEnable = radioEnable;
-    }
-
-    public String getRadioUnit() {
-        return radioUnit;
-    }
-
-    public void setRadioUnit(String radioUnit) {
-        this.radioUnit = radioUnit;
-    }
-
-    public String getRadioMode() {
-        return radioMode;
-    }
-
-    public void setRadioMode(String radioMode) {
-        this.radioMode = radioMode;
-    }
-
-    public String getRadioChannel() {
-        return radioChannel;
-    }
-
-    public void setRadioChannel(String radioChannel) {
-        this.radioChannel = radioChannel;
-    }
-
-    public String getRadioBandwidth() {
-        return radioBandwidth;
-    }
-
-    public void setRadioBandwidth(String radioBandwidth) {
-        this.radioBandwidth = radioBandwidth;
-    }
-
-    public String getRadioPower() {
-        return radioPower;
-    }
-
-    public void setRadioPower(String radioPower) {
-        this.radioPower = radioPower;
-    }
-
-    public Integer getMaxClientsCount() {
-        return maxClientsCount;
-    }
-
-    public void setMaxClientsCount(Integer maxClientsCount) {
-        this.maxClientsCount = maxClientsCount;
-    }
-
-    public String getDeviceName() {
-        return device != null ? device.getDeviceName() : null;
-    }
-
-    public Long getDeviceIndex() {
-        return deviceIndex;
-    }
-
-    public void setDeviceIndex(Long deviceIndex) {
-        this.deviceIndex = deviceIndex;
-    }
-
-    public String getDeviceRadioId() {
-        return deviceRadioId;
-    }
-
-    public void setDeviceRadioId(String deviceRadioId) {
-        this.deviceRadioId = deviceRadioId;
-    }
-}
-
-CREATE TABLE `cwm_config_radio` (
-  `radioId` BIGINT(20) NOT NULL,
-  `siteId` BIGINT(20) NOT NULL,
-  `deviceIndex` BIGINT(20) NOT NULL,
-  `radioEnable` VARCHAR(5) NOT NULL,
-  `radioUnit` VARCHAR(10) NOT NULL,
-  `radioMode` VARCHAR(32) DEFAULT NULL,
-  `radioChannel` VARCHAR(5) DEFAULT NULL,
-  `radioBandwidth` VARCHAR(10) DEFAULT NULL,
-  `radioPower` VARCHAR(5) NOT NULL,
-  `maxClientsCount` INT(11) DEFAULT NULL,
-  `radioInfo` VARCHAR(1000) DEFAULT NULL,
-  `version` TINYINT(4) DEFAULT NULL,
-  `reserve1` VARCHAR(255) DEFAULT NULL,
-  `reserve2` INT(11) DEFAULT NULL,
-  PRIMARY KEY (`radioId`),
-  UNIQUE KEY `device_unit_idx` (`deviceIndex`,`radioUnit`),
-  KEY `site_idx` (`siteId`)
-)
-111
