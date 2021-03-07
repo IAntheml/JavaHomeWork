@@ -1,285 +1,47 @@
-public class RrmTimingExecutorTask implements Runnable {
-
-    private Long projectId;
-
-    public RrmTimingExecutorTask(Long projectId) {
-        this.projectId = projectId;
-    }
-
-    @Override
-    public void run() {
-        RedissonClient redissonClient = SpringContextHolder.getBean(RedissonClient.class);
-        DeviceDao deviceDao = SpringContextHolder.getBean(DeviceDao.class);
-        DeviceRepository deviceRepository = SpringContextHolder.getBean(DeviceRepository.class);
-        OptimizeHistoryRepository optimizeHistoryDao = SpringContextHolder.getBean(OptimizeHistoryRepository.class);
-        RadioOptimizeParamsRepository params = SpringContextHolder.getBean(RadioOptimizeParamsRepository.class);
-        Passthrough passthrough = SpringContextHolder.getBean(Passthrough.class);
-        RadioOptimizeInfo radioOptimizeInfo = params.findByProjectId(projectId);
-        String optimizeResultId = UUID.randomUUID().toString().replaceAll("-", "").substring(0, 5)
-                + projectId;
-        if (isProjectRadioOptimizing(projectId, redissonClient)) {
-            return;
-        }
-        List<Device> projectDevices = deviceRepository.findAllBySiteIdAndBelongDeviceIsNull(projectId);
-        if (projectDevices == null) {
-            return;
-        }
-        List<Device> projectDevicesSupportRrm = new ArrayList<>();
-        Integer deviceFeature;
-        for (Device device : projectDevices) {
-            //筛选出支持射频调优的设备
-            deviceFeature = DeviceRedissonApi.getInstance().getDeviceFeature(projectId, device.getDeviceMac());
-            if (DeviceApi.supportFeature(deviceFeature, DeviceFeature.supportRrm)) {
-                projectDevicesSupportRrm.add(device);
-            }
-        }
-        if (CollectionUtils.isEmpty(projectDevicesSupportRrm)) {
-            //当前项目中，没有设备支持射频调优
-            return;
-        }
-        List<Long> devicesIndexes = new ArrayList<>();
-        for (Device device : projectDevicesSupportRrm) {
-            List<Long> subDeviceIndexes = deviceDao.findInvalidApIndexBySiteIdAndBelongDevice(projectId
-                    , device.getId());
-            devicesIndexes.addAll(subDeviceIndexes);
-        }
-        //创建projectDeviceStatusMap存储项目内设备的调优状态及调优时间
-        setProjectRadioOptimizingFlag(projectId, projectDevicesSupportRrm, optimizeResultId,devicesIndexes,redissonClient);
-        //写入数据库的调优记录表，调优状态为"underway"
-        optimizeHistoryDao.save(new RadioOptimizeHistory(projectId, optimizeResultId, "定时调优"
-                , RadioOptimizeType.IMMEDIATELY.toString(), RadioOptimizeStatus.UNDERWAY.toString()
-                , Instant.now().toEpochMilli()));
-        if (radioOptimizeInfo == null) {
-            //如果没有射频调优参数
-            return;
-        }
-        //将RadioOptimizeParams转为下发到设备的ApmngRrm
-        Map<String, Object> protocolMap = JsonUtils.json2Map(
-                JsonUtils.bean2Json(RadioOptimizeParamsAdaptor.toApmngRrm(radioOptimizeInfo)));
-        for (Device device : projectDevicesSupportRrm) {
-            passthrough.post(device.getDeviceId(), protocolMap);
-        }
-    }
-
-    private boolean isProjectRadioOptimizing(Long projectId, RedissonClient redissonClient) {
-        String redisKey = RrmConstant.REDIS_KEY_PREFIX_OPTIMIZE_PROJECT_PREFIX + projectId;
-        RMap<String, Object> projectDeviceStatusMap = redissonClient.getMap(redisKey);
-        return projectDeviceStatusMap.size() != 0;
-    }
-    private void setProjectRadioOptimizingFlag(Long projectId, List<Device> supportRrmDeviceList, String resultId
-            ,List<Long> subDeviceIndexes,RedissonClient redissonClient) {
-        String redisKey = RrmConstant.REDIS_KEY_PREFIX_OPTIMIZE_PROJECT_PREFIX + projectId;
-        RMap<String, Object> projectDeviceStatusMap = redissonClient.getMap(redisKey);
-        projectDeviceStatusMap.put(RrmConstant.REDIS_HASH_KEY_RRM_RESULT_ID, resultId);
-        projectDeviceStatusMap.put(RrmConstant.REDIS_HASH_KEY_RRM_TIME, Instant.now().toEpochMilli());
-        projectDeviceStatusMap.put(RrmConstant.REDIS_HASH_KEY_RRM_DEVICE_INDEXES,subDeviceIndexes);
-        for (Device device : supportRrmDeviceList) {
-            Map<String, Long> deviceRrmStatusAndTime = new HashMap<>();
-            deviceRrmStatusAndTime.put(RrmConstant.DEVICE_RRM_STATUS_NOT_START, Instant.now().toEpochMilli());
-            projectDeviceStatusMap.put(device.getDeviceMac(), deviceRrmStatusAndTime);
-        }
-    }
-}
-
-
-
-@Slf4j
-@Configuration
-@EnableScheduling
-public class RrmTimingScheduledConfig implements SchedulingConfigurer {
-
-    private ScheduledTaskRegistrar regis;
-
-    @Autowired
-    private RadioOptimizeParamsRepository radioOptimizeParamsDao;
-
-    @Autowired
-    private RedissonClient redissonClient;
-
-    @Autowired
-    private RadioDao radioDao;
-
-    @Autowired
-    private OptimizeHistoryRepository optimizeHistoryDao;
-
-    @Autowired
-    private OptimizeResultRepository optimizeResultDao;
-
-    private static final ThreadPoolExecutor POLLING_RRM_START_THREAD_POOL = new ScheduledThreadPoolExecutor(10,
-            new BasicThreadFactory.Builder().namingPattern("rrm-scheduled-pool-%d").daemon(true).build());
-
-    private final ConcurrentHashMap<Long, CronTask> projectTimingRrmTaskMap = new ConcurrentHashMap<>();
-
-    @Override
-    public void configureTasks(ScheduledTaskRegistrar scheduledTaskRegistrar) {
-        scheduledTaskRegistrar.setScheduler(POLLING_RRM_START_THREAD_POOL);
-        this.regis = scheduledTaskRegistrar;
-        buildTimingRrmTask(scheduledTaskRegistrar);
-        RSet<Long> rrmProjectIds = redissonClient.getSet(RrmConstant.REDIS_KEY_FOR_RRM_PROJECT_ID);
-        scheduledTaskRegistrar.addFixedRateTask(() -> {
-            for (Long projectId : rrmProjectIds){
-                buildSaveRrmResult(projectId);
-            }
-        }, 3 * 60 * 1000);
-    }
-
-    private void buildSaveRrmResult(Long projectId) {
-        log.debug("current time :" + new Date().toString() +" projectId: " + projectId + " rrm research");
-        String redisKey = RrmConstant.REDIS_KEY_PREFIX_OPTIMIZE_PROJECT_PREFIX + projectId;
-        RMap<String, Object> projectDeviceStatusMap = redissonClient.getMap(redisKey);
-        if (CollectionUtils.isEmpty(projectDeviceStatusMap)){
-            return;
-        }
-        String rrmResultId = null;
-        List<Long> subDeviceIndexes = new ArrayList<>();
-        Long rrmStartTime = null;
-        List<String> deviceStatuses = new ArrayList<>();
-        for (String key : projectDeviceStatusMap.keySet()) {
-            if (RrmConstant.REDIS_HASH_KEY_RRM_RESULT_ID.equals(key)) {
-                rrmResultId = (String) projectDeviceStatusMap.get(key);
-            }
-            if (RrmConstant.REDIS_HASH_KEY_RRM_TIME.equals(key)) {
-                rrmStartTime = (Long) projectDeviceStatusMap.get(key);
-            }
-            if (RrmConstant.REDIS_HASH_KEY_RRM_DEVICE_INDEXES.equals(key)) {
-                subDeviceIndexes = (List<Long>) projectDeviceStatusMap.get(key);
-            }
-            Object deviceStatusTime = projectDeviceStatusMap.get(key);
-            if (!(deviceStatusTime instanceof Map)) {
-                return;
-            } else {
-                if (((Map) deviceStatusTime).keySet().size() != 1) {
-                    return;
+    public ApiResult bindFreeStrategyWithDeviceV2(AuthUserBindDeviceVO vo, Context context){
+        //更新绑定关系表
+        List<Long> bindDeviceIndexes = vo.getBindDeviceIndexes();
+        List<Long> unBindDeviceIndexes = vo.getUnBindDeviceIndexes();
+        List<Long> authUserList = vo.getAuthUserList();
+        Long projectId = vo.getProjectId();
+        if (authUserList.size() == 1){
+            Long authUserId = authUserList.get(0);
+            List<Long> deviceIndexes = nmsDeviceConfigBindRelationDao.findDeviceIndexesByProjectIdAndConfigModuleAndModuleEntryId(projectId, ConfigModule.authUser.toString(), authUserId);
+            List<NmsDeviceConfigBindRelation> bindRelationList = new ArrayList<>();
+            for (Long bindDeviceIndex : bindDeviceIndexes){
+                if (CollectionUtils.isEmpty(deviceIndexes) || !deviceIndexes.contains(bindDeviceIndex)){
+                    bindRelationList.add(new NmsDeviceConfigBindRelation(SnowflakeHolder.nextId(),projectId,ConfigModule.authUser.toString(),null,authUserId,bindDeviceIndex));
+                }else {
+                    bindDeviceIndexes.remove(bindDeviceIndex);
                 }
-                deviceStatuses.add((String) ((Map) deviceStatusTime).keySet().iterator().next());
             }
-        }
-        if (rrmResultId == null || CollectionUtils.isEmpty(subDeviceIndexes) || rrmStartTime == null) {
-            return;
-        }
-        if ((Instant.now().toEpochMilli() - rrmStartTime) > 5 * 60 * 1000) {
-            buildRrmResult(projectId, rrmResultId);
-            return;
-        }
-        for (String deviceStatus : deviceStatuses) {
-            if (!(RrmConstant.DEVICE_RRM_STATUS_CONFIG_SYNC.equals(deviceStatus))) {
-                log.debug("project has device do not finish rrm");
-                return;
+            nmsDeviceConfigBindRelationDao.saveAll(bindRelationList);
+            //下发绑定bindDeviceIndexes、freeStrategyId
+            sendFreeStrategyToDeviceMqMsg(projectId,context,ConfigType.bind,Collections.singletonList(authUserId),bindDeviceIndexes);
+            if (!CollectionUtils.isEmpty(deviceIndexes)){
+                unBindDeviceIndexes.removeIf(unBindDeviceIndex -> !deviceIndexes.contains(unBindDeviceIndex));
+                nmsDeviceConfigBindRelationDao.deleteByProjectIdAndConfigModuleAndModuleEntryIdAndDeviceIndexIn(projectId,ConfigModule.authUser.toString(),authUserId,unBindDeviceIndexes);
+                //下发解绑bindDeviceIndexes
+                sendFreeStrategyToDeviceMqMsg(projectId,context,ConfigType.unbind,Collections.singletonList(authUserId),unBindDeviceIndexes);
             }
-        }
-        //生成调优结果
-        buildRrmResult(projectId, rrmResultId);
-    }
-
-    public void buildRrmResult(Long projectId, String rrmResultId) {
-        RMap<String, Object> map = redissonClient.getMap(RrmConstant.REDIS_KEY_PREFIX_OPTIMIZE_PROJECT_PREFIX
-                + projectId);
-        List<Long> deviceIndexes = (List<Long>) map.get(RrmConstant.REDIS_HASH_KEY_RRM_DEVICE_INDEXES);
-        //拿到结果，存储结果。
-        List<RadioOptimizeResultParams> resultParams = radioDao.getRadioOptimizeResultParams(deviceIndexes, projectId);
-        List<RadioOptimizeResult> radioOptimizeResults = new ArrayList<>();
-        for (RadioOptimizeResultParams params : resultParams) {
-            RadioOptimizeResult radioOptimizeResult = new RadioOptimizeResult();
-            radioOptimizeResult.setProjectId(projectId);
-            radioOptimizeResult.setOptimizeResultId(rrmResultId);
-            radioOptimizeResult.setRadioUnit(params.getRadioUnit());
-            radioOptimizeResult.setRadioChannel(params.getRadioChannel());
-            radioOptimizeResult.setDeviceAmount(params.getDeviceAmount());
-            radioOptimizeResults.add(radioOptimizeResult);
-        }
-        optimizeResultDao.saveAll(radioOptimizeResults);
-        //调优结果记录更新为已完成,并将Redis缓存清除
-        RadioOptimizeHistory oldRadioOptimizeHistory = optimizeHistoryDao.findByOptimizeResultId(rrmResultId);
-        if (oldRadioOptimizeHistory != null) {
-            log.info(oldRadioOptimizeHistory.toString());
-            oldRadioOptimizeHistory.setOptimizeStatus(RadioOptimizeStatus.FINISH.toString());
-            optimizeHistoryDao.save(oldRadioOptimizeHistory);
-        }
-        map.clear();
-    }
-
-    public void refreshTimingRrmTask(Long projectId) {
-        RadioOptimizeInfo updatedInfo = radioOptimizeParamsDao.findByProjectId(projectId);
-        String cronExpression = getCronExpression(updatedInfo);
-        if (cronExpression == null) {
-            projectTimingRrmTaskMap.remove(projectId);
-        } else {
-            projectTimingRrmTaskMap.replace(projectId, new CronTask(new RrmTimingExecutorTask(projectId), cronExpression));
-        }
-        regis.setCronTasksList(new ArrayList<>(projectTimingRrmTaskMap.values()));
-    }
-
-    private void buildTimingRrmTask(ScheduledTaskRegistrar scheduledTaskRegistrar) {
-        Iterable<RadioOptimizeInfo> all = radioOptimizeParamsDao.findAll();
-        for (RadioOptimizeInfo optimizeParams : all) {
-            if ("on".equals(optimizeParams.getTimingOptimizeEnable())) {
-                String cronExpression = getCronExpression(optimizeParams);
-                if (cronExpression == null) {
-                    return;
+        }else {
+            if (unBindDeviceIndexes != null){
+                return new ApiResult(Errors.INVALID_PARAMS);
+            }
+            for (Long authUserId : authUserList){
+                List<Long> deviceIndexes = nmsDeviceConfigBindRelationDao.findDeviceIndexesByProjectIdAndConfigModuleAndModuleEntryId(projectId,
+                        ConfigModule.authUser.toString(), authUserId);
+                List<NmsDeviceConfigBindRelation> bindRelationList = new ArrayList<>();
+                for (Long deviceIndex : bindDeviceIndexes){
+                    if (deviceIndexes.contains(deviceIndex)){
+                        bindDeviceIndexes.remove(deviceIndex);
+                    }else {
+                        bindRelationList.add(new NmsDeviceConfigBindRelation(SnowflakeHolder.nextId(),projectId,ConfigModule.authUser.toString(),null,authUserId,deviceIndex));
+                    }
                 }
-                log.debug(cronExpression);
-                projectTimingRrmTaskMap.put(optimizeParams.getProjectId(),
-                        new CronTask(new RrmTimingExecutorTask(optimizeParams.getProjectId()), cronExpression));
+                nmsDeviceConfigBindRelationDao.saveAll(bindRelationList);
+                sendFreeStrategyToDeviceMqMsg(projectId,context,ConfigType.bind,Collections.singletonList(freeStrategyId),bindDeviceIndexes);
             }
         }
-        scheduledTaskRegistrar.setCronTasksList(new ArrayList<>(projectTimingRrmTaskMap.values()));
+        return ApiResult.SUCCESS;
     }
-
-    private String getCronExpression(RadioOptimizeInfo optimizeParams) {
-        int minStartTime = 0;
-        int maxStartTime = 60;
-        int validStartTimeSpilt = 3;
-        int repeatEveSpilt = 7;
-        int validRepeatSpiltMax = 7;
-        int validRepeatSpiltMin = 1;
-        if (optimizeParams == null) {
-            return null;
-        }
-        String startTime = optimizeParams.getStartTime().replaceAll(" ","");
-        String repeatDate = optimizeParams.getRepeatDate().replaceAll(" ","");
-        String[] split = startTime.split(":");
-        //[1,2,3] 08:08:08 "[1,2,3]"
-        //10 10 2 ? ? 1,2,3,4,5,6 *
-        if (split.length != validStartTimeSpilt) {
-            return null;
-        }
-        int hour = Integer.parseInt(split[0]);
-        int minute = Integer.parseInt(split[1]);
-        int second = Integer.parseInt(split[2]);
-        if (hour >= maxStartTime || hour <= minStartTime || minute >= maxStartTime || minute <= minStartTime
-                || second >= maxStartTime || second <= minStartTime) {
-            return null;
-        }
-        String repeatDateSubstring = repeatDate.substring(repeatDate.indexOf('[') + 1, repeatDate.lastIndexOf(']'));
-        String[] repeatDateSubstringArrays = repeatDateSubstring.split(",");
-        StringBuilder repeat = new StringBuilder();
-        if (repeatDateSubstringArrays.length > repeatEveSpilt || repeatDateSubstringArrays.length <= 0) {
-            return null;
-        }
-        for (String s : repeatDateSubstringArrays) {
-            if (Integer.parseInt(s) > validRepeatSpiltMax || Integer.parseInt(s) < validRepeatSpiltMin) {
-                return null;
-            }
-        }
-        if (repeatDateSubstringArrays.length == repeatEveSpilt) {
-            repeat = new StringBuilder("*");
-        } else {
-            for (int i = 0 ; i < repeatDateSubstringArrays.length ; i++ ) {
-                if (i < repeatDateSubstringArrays.length - 1){
-                    repeat.append(repeatDateSubstringArrays[i]).append(",");
-                }
-                repeat.append(repeatDateSubstringArrays[i]);
-            }
-        }
-        String cron = second + " " + minute + " " + hour + " " + "? " + "* " + repeat;
-        if (!CronExpression.isValidExpression(cron)) {
-            return null;
-        }
-        return cron;
-    }
-
-    @PreDestroy
-    public void destroy() {
-        this.regis.destroy();
-    }
-}
