@@ -1,0 +1,2611 @@
+package com.tplink.ignite.module.nms.wireless.service;
+
+import com.tplink.ignite.jeelib.common.Errors;
+import com.tplink.ignite.jeelib.domain.ApiResult;
+import com.tplink.ignite.jeelib.domain.Grid;
+import com.tplink.ignite.jeelib.snowflake.SnowflakeHolder;
+import com.tplink.ignite.jeelib.utils.JsonUtils;
+import com.tplink.ignite.module.nms.resource.api.DeviceApi;
+import com.tplink.ignite.module.nms.resource.api.DeviceRedissonApi;
+import com.tplink.ignite.module.nms.resource.dao.DeviceDao;
+import com.tplink.ignite.module.nms.resource.domain.adaptor.DeviceAdaptor;
+import com.tplink.ignite.module.nms.resource.domain.bean.Device;
+import com.tplink.ignite.module.nms.resource.domain.bean.DeviceType;
+import com.tplink.ignite.module.nms.resource.domain.cache.RedisDevice;
+import com.tplink.ignite.module.nms.resource.domain.util.DeviceUtil;
+import com.tplink.ignite.module.nms.wireless.aop.SiteLock;
+import com.tplink.ignite.module.nms.wireless.api.ConfigCapacityApi;
+import com.tplink.ignite.module.nms.wireless.api.SsidApi;
+import com.tplink.ignite.module.nms.wireless.dao.PortalDao;
+import com.tplink.ignite.module.nms.wireless.dao.PortalRepository;
+import com.tplink.ignite.module.nms.wireless.dao.RadioDao;
+import com.tplink.ignite.module.nms.wireless.dao.SsidRepository;
+import com.tplink.ignite.module.nms.wireless.dao.WirelessBindDao;
+import com.tplink.ignite.module.nms.wireless.dao.WirelessBindRepository;
+import com.tplink.ignite.module.nms.wireless.dao.WirelessDao;
+import com.tplink.ignite.module.nms.wireless.domain.adaptor.WirelessAdaptor;
+import com.tplink.ignite.module.nms.wireless.domain.bean.bean.CapacityCount;
+import com.tplink.ignite.module.nms.wireless.domain.bean.bean.Portal;
+import com.tplink.ignite.module.nms.wireless.domain.bean.bean.Radio;
+import com.tplink.ignite.module.nms.wireless.domain.bean.bean.RadioCapacity;
+import com.tplink.ignite.module.nms.wireless.domain.bean.bean.Ssid;
+import com.tplink.ignite.module.nms.wireless.domain.bean.bean.Wireless;
+import com.tplink.ignite.module.nms.wireless.domain.bean.bean.WirelessBind;
+import com.tplink.ignite.module.nms.wireless.domain.bean.bean.WirelessBindCapacity;
+import com.tplink.ignite.module.nms.wireless.domain.bean.bean.apdb.MngtCapacity;
+import com.tplink.ignite.module.nms.wireless.domain.constant.Constant;
+import com.tplink.ignite.module.nms.wireless.domain.handle.WirelessResultHandle;
+import com.tplink.ignite.module.nms.wireless.domain.mq.ConfigContext;
+import com.tplink.ignite.module.nms.wireless.domain.mq.ConfigModule;
+import com.tplink.ignite.module.nms.wireless.domain.mq.ConfigType;
+import com.tplink.ignite.module.nms.wireless.domain.mq.SetConfigMsg;
+import com.tplink.ignite.module.nms.wireless.domain.mq.SsidConfigTarget;
+import com.tplink.ignite.module.nms.wireless.domain.vo.Context;
+import com.tplink.ignite.module.nms.wireless.domain.vo.CopySsidVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.DeviceRadioVidBindVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.GetSiteConfigVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.MultiQuickAddSsidVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.PortalVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.QuickAddSsidVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.RadioVidVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.SiteDeleteVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.SiteSwitchVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.SiteVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.SsidAndBindRelationVo;
+import com.tplink.ignite.module.nms.wireless.domain.vo.SsidBindVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.SsidDeviceVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.SsidListVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.SsidPortalVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.SsidVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.SsidWithAutoBindVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.WirelessIdVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.WirelessVO;
+import com.tplink.ignite.module.nms.wireless.mq.DeviceConfigMqClient;
+import com.tplink.ignite.module.nms.wireless.util.AlarmUtil;
+import com.tplink.ignite.module.nms.wireless.util.CommonUtil;
+import com.tplink.ignite.module.nms.wireless.util.MsgUtil;
+import com.tplink.ignite.nms.common.SpringContextHolder;
+import com.tplink.ignite.nms.common.alarmlog.LogOpResult;
+import com.tplink.ignite.nms.common.alarmlog.LogOpType;
+import com.tplink.ignite.nms.common.dao.QueryCondition;
+import com.tplink.ignite.nms.common.dao.SqlResultHandle;
+import com.tplink.ignite.nms.common.util.JumpConsistentHash;
+import org.redisson.api.RList;
+import org.redisson.api.RMap;
+import org.redisson.api.RedissonClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.BeanUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.CollectionUtils;
+
+import javax.annotation.PostConstruct;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import static com.tplink.ignite.nms.common.util.CommonUtil.BigIntegerToInteger;
+import static com.tplink.ignite.nms.common.util.CommonUtil.parseInteger;
+
+
+/**
+ * Copyright (C) 2017 TP-LINK Technologies Co., Ltd. All rights reserved
+ * Author: dongxinwei
+ * Date: 2017-08-29
+ * Description:
+ */
+@Service
+public class WirelessService implements SsidApi {
+    private Logger logger = LoggerFactory.getLogger(getClass());
+
+    @Autowired
+    private WirelessDao wirelessDao;
+    @Autowired
+    private SsidRepository ssidDao;
+    @Autowired
+    private PortalDao portalDao;
+    @Autowired
+    private PortalRepository portalRepository;
+    @Autowired
+    private RadioDao radioDao;
+    @Autowired
+    private DeviceDao deviceDao;
+    @Autowired
+    private WirelessBindDao wirelessBindDao;
+    @Autowired
+    private WirelessBindRepository wirelessBindRepository;
+    @Autowired
+    private ConfigCapacityApi capacityApi;
+    @Autowired
+    private PortalService portalService;
+
+    @Autowired
+    private DeviceConfigMqClient mqSendClient;
+
+    @Autowired
+    private RedissonClient redissonClient;
+
+    private WirelessResultHandle handle = WirelessResultHandle.getInstance();
+
+    private final String WIRELESS_BIND_UNBIND_WAITING_FLAG = "cwm:ww:";
+    private final Integer WIRELESS_DELAY_TIME = 3;
+    private Map<Integer, ExecutorService> delayWirelessExecutorMap = new HashMap<>();
+
+    @Value("${tums.nms.wireless.task.threadNum:20}")
+    Integer wirelessTaskNum;
+
+    @PostConstruct
+    public void init() {
+        for (int i = 0; i < wirelessTaskNum; i++) {
+            delayWirelessExecutorMap.put(i, Executors.newSingleThreadExecutor());
+        }
+    }
+
+    public ExecutorService getDelayExecutor(Long deviceIndex) {
+        return delayWirelessExecutorMap.get(JumpConsistentHash.jumpConsistentHash(deviceIndex, wirelessTaskNum));
+    }
+
+    @Transactional
+    @SiteLock
+    public ApiResult addSsid(SsidVO vo, Context context) {
+        if (vo == null) {
+            return new ApiResult(Errors.INVALID_PARAMS);
+        }
+
+        Portal portal;
+        if (vo.getPortalId() != null && vo.getPortalId() != 0) {
+            portal = portalRepository.findBySiteIdAndPortalId(vo.getSiteId(), vo.getPortalId());
+            if (portal == null) {
+                return new ApiResult(Errors.PORTAL_NOT_EXIST_ERROR);
+            }
+        } else {
+            vo.setPortalId(0L);
+        }
+
+        List<Ssid> ssidList = ssidDao.findBySiteIdAndSsidName(vo.getSiteId(), vo.getSsidName());
+        if (ssidList != null && (ssidList.size() > 1 || (ssidList.size() == 1 && WirelessAdaptor.toSsidVO(ssidList.get(0)).getEncode().equals(vo.getEncode())))) {
+            return new ApiResult(Errors.WIRELESS_SSID_CONFLICT_ERROR);
+        }
+
+        vo.setWirelessId(SnowflakeHolder.nextId());
+
+        Ssid ssid = WirelessAdaptor.toSsid(vo, null);
+        ssidDao.save(ssid);
+
+        ApiResult result = new ApiResult(Errors.SUCCESS);
+        result.setResult(WirelessAdaptor.toSsidVO(ssidDao.findById(ssid.getWirelessId()).get()));
+        return result;
+    }
+
+    public ApiResult bindSsidAndDeviceForQuickAdd(MultiQuickAddSsidVO vo) {
+        if(DeviceRedissonApi.getInstance().isInQuickAddStatus(vo.getProjectId())) {
+            RMap<Long, String> quickAddSsid = redissonClient.getMap(Constant.QUICK_ADD_SSID_SET_PREFIX + vo.getProjectId());
+
+            if(!CollectionUtils.isEmpty(vo.getWirelessIdList()) && !CollectionUtils.isEmpty(vo.getDeviceIndexList())) {
+                for(Long wirelessId : vo.getWirelessIdList()) {
+                    QuickAddSsidVO quickAddSsidVO = new QuickAddSsidVO();
+                    quickAddSsidVO.setWirelessId(wirelessId);
+                    quickAddSsidVO.setDeviceIndexList(vo.getDeviceIndexList());
+                    quickAddSsid.put(wirelessId, JsonUtils.bean2Json(quickAddSsidVO));
+                }
+            }
+
+        }
+
+        return new ApiResult(Errors.SUCCESS);
+    }
+
+    @SiteLock
+    public ApiResult deleteSsids(SiteDeleteVO vo, Context context) {
+        if (vo == null) {
+            return new ApiResult(Errors.INVALID_PARAMS);
+        }
+        StringBuilder targetSsid = new StringBuilder();
+
+        for (Long wirelessId : vo.getIdList()) {
+            Wireless wireless = wirelessDao.findBySiteIdAndWirelessId(vo.getSiteId(), wirelessId);
+            if (wireless == null) {
+                return new ApiResult(Errors.WIRELESS_NOT_EXIST_ERROR);
+            }
+            targetSsid.append(wireless.getSsidName()).append(" ");
+
+            List<Long> belongDeviceList = wirelessBindDao.getWirelessBelongDeviceList(vo.getSiteId(), wirelessId);
+//        删除ssid，数据库会相应删除对应关系，发送删除消息
+            ssidDao.deleteById(wirelessId);
+            if (!CollectionUtils.isEmpty(belongDeviceList)) {
+                SsidConfigTarget target = new SsidConfigTarget();
+                target.setSsidId(wirelessId);
+                List<SsidConfigTarget.SsidBindParam> ssidBindParamList = new ArrayList<>();
+                for (Long belongDevice : belongDeviceList) {
+                    RedisDevice redisDevice = DeviceRedissonApi.getInstance().getRedisDevice(vo.getSiteId(), belongDevice);
+                    if (redisDevice == null) {
+                        return new ApiResult(Errors.DEVICE_NOT_EXIST_ERROR);
+                    }
+                    ssidBindParamList.add(new SsidConfigTarget.SsidBindParam(belongDevice, redisDevice, ConfigType.delete));
+                }
+                target.setSsidBindParamList(ssidBindParamList);
+                sendSsidPortalMqMsg(vo.getSiteId(), context, ConfigType.delete, target);
+            }
+        }
+
+        return new ApiResult(Errors.SUCCESS, targetSsid.toString().trim());
+    }
+
+    public Ssid findBySiteIdAndWirelessId(CopySsidVO vo){
+        return ssidDao.findBySiteIdAndWirelessId(vo.getSiteId(), vo.getWirelessId());
+    }
+
+    @SiteLock
+    public ApiResult copySsid(CopySsidVO vo, Context context) {
+        if (vo == null) {
+            return new ApiResult(Errors.INVALID_PARAMS);
+        }
+
+        Ssid ssid = ssidDao.findBySiteIdAndWirelessId(vo.getSiteId(), vo.getWirelessId());
+        if (ssid == null) {
+            return new ApiResult(Errors.WIRELESS_NOT_EXIST_ERROR);
+        }
+
+        SsidVO ssidVO = WirelessAdaptor.toSsidVO(ssid);
+        String currentEncode = ssidVO.getEncode();
+
+        List<Ssid> ssidExistList = ssidDao.findBySiteIdAndSsidName(vo.getSiteId(), vo.getSsidName());
+
+        if (!CollectionUtils.isEmpty(ssidExistList)) {
+            for (Ssid s : ssidExistList) {
+                if (WirelessAdaptor.toSsidVO(s).getEncode().equalsIgnoreCase(currentEncode)) {
+                    return new ApiResult(Errors.WIRELESS_SSID_CONFLICT_ERROR, vo.getSsidName());
+                }
+            }
+        }
+
+        Ssid copiedSsid = new Ssid();
+
+        BeanUtils.copyProperties(ssid, copiedSsid);
+
+
+        Long newWirelessId = SnowflakeHolder.nextId();
+        copiedSsid.setWirelessId(newWirelessId);
+        copiedSsid.setSsidName(vo.getSsidName());
+        ssidVO.setWirelessId(newWirelessId);
+        ssidVO.setSsidName(vo.getSsidName());
+
+        copiedSsid.setWirelessInfo(JsonUtils.bean2Json(ssidVO));
+
+        ssidDao.save(copiedSsid);
+
+        return new ApiResult(Errors.SUCCESS);
+    }
+
+    @SiteLock
+    public ApiResult checkSsidAndBindRelation(SsidAndBindRelationVo vo, Context context) {
+        SsidVO ssid = null;
+        List<Long> radioIndexList = new ArrayList<>();
+
+        Long siteId = null;
+
+        Map<String, Set<String>> tkipConflictRadioUnitMap = new HashMap<>();
+
+        if(vo.getBindRelation() != null) {
+            siteId = vo.getBindRelation().getSiteId();
+            vo.getBindRelation().getDeviceRadioVidList().forEach(bind -> {
+                bind.getRadioVidList().forEach(r -> {
+                    radioIndexList.add(r.getRadioId());
+                });
+            });
+        }else {
+            assert vo.getSsid() != null;
+            siteId = vo.getSsid().getSiteId();
+            List<WirelessBind> allBindList = wirelessBindDao.findBySiteIdAndSsid(siteId, vo.getSsid().getWirelessId());
+
+            if(!CollectionUtils.isEmpty(allBindList)) {
+                allBindList.forEach(bind -> {
+                    radioIndexList.add(bind.getRadioId());
+                });
+            }else {
+
+            }
+        }
+
+        if(vo.getSsid() != null) {
+            siteId = vo.getSsid().getSiteId();
+            ssid = vo.getSsid();
+        }else {
+            assert  vo.getBindRelation() != null;
+            assert  !CollectionUtils.isEmpty(vo.getBindRelation().getSsidList());
+
+            siteId = vo.getBindRelation().getSiteId();
+            Ssid targetSsid = null;
+
+            for(Long ssidId : vo.getBindRelation().getSsidList()) {
+                targetSsid = ssidDao.findBySiteIdAndWirelessId(siteId, ssidId);
+                break;
+            }
+
+            if(targetSsid == null) {
+                return new ApiResult(Errors.INVALID_PARAMS);
+            }
+
+            ssid = WirelessAdaptor.toSsidVO(targetSsid);
+        }
+
+        if(ssid == null) {
+            return new ApiResult(Errors.INVALID_PARAMS);
+        }
+
+        if(ssid.getWirelessId() == null && CollectionUtils.isEmpty(radioIndexList)) {
+            return new ApiResult(Errors.SUCCESS);
+        }
+
+        boolean tkip = false;
+        if(ssid.getWpaWpa2Param() != null && ssid.getWpaWpa2Param().getEncryptAlg().equals(Constant.SSID_TKIP)) {
+            tkip = true;
+        }
+
+        if(ssid.getWpaWpa2PskParam() != null && ssid.getWpaWpa2PskParam().getEncryptAlg().equals(Constant.SSID_TKIP)) {
+            tkip = true;
+        }
+
+        if(tkip) {
+            List<Radio> radioList = radioDao.findRadioUnionDeviceBySiteIdAndRadioId(siteId, radioIndexList);
+
+            if(!CollectionUtils.isEmpty(radioList)) {
+                radioList.forEach(r -> {
+                    if(Constant.RADIO_11N_ONLY_2G.equals(r.getRadioMode())
+                            || Constant.RADIO_11N_ONLY_5G.equals(r.getRadioMode())) {
+
+                        if(tkipConflictRadioUnitMap.get(r.getDevice().getDeviceName()) == null) {
+                            tkipConflictRadioUnitMap.put(r.getDevice().getDeviceName(), new HashSet<>());
+                        }
+
+                        tkipConflictRadioUnitMap.get(r.getDevice().getDeviceName()).add(r.getRadioUnit());
+                    }
+                });
+
+                if(!CollectionUtils.isEmpty(tkipConflictRadioUnitMap)) {
+                    return new ApiResult(Errors.SSID_TKIP_11N_CONFLICT, tkipConflictRadioUnitMap);
+                }
+            }
+        }
+
+        return new ApiResult(Errors.SUCCESS);
+    }
+
+    @SiteLock
+    public ApiResult updateSsid(SsidVO vo, Context context) {
+        if (vo == null) {
+            return new ApiResult(Errors.INVALID_PARAMS);
+        }
+        Ssid wireless = ssidDao.findBySiteIdAndWirelessId(vo.getSiteId(), vo.getWirelessId());
+        if (wireless == null) {
+            return new ApiResult(Errors.WIRELESS_NOT_EXIST_ERROR);
+        }
+
+
+//      检查名称冲突
+        String ssidName = wireless.getSsidName();
+
+        List<Wireless> wirelessExtList = wirelessDao.findBySiteIdAndSsid(vo.getSiteId(), vo.getSsidName());
+        if (!CollectionUtils.isEmpty(wirelessExtList)) {
+            if (wirelessExtList.size() > 2) {
+                return new ApiResult(Errors.WIRELESS_SSID_CONFLICT_ERROR, ssidName);
+            } else {
+                for (Wireless wire : wirelessExtList) {
+                    if (!wire.getWirelessId().equals(wireless.getWirelessId()) && WirelessAdaptor.toSsidVO(wire).getEncode().equals(vo.getEncode())) {
+                        return new ApiResult(Errors.WIRELESS_SSID_CONFLICT_ERROR, ssidName);
+                    }
+                }
+            }
+        }
+
+
+        Portal portalNew = null;
+        if (vo.getPortalId() != null && vo.getPortalId() != 0L) {
+            portalNew = portalRepository.findBySiteIdAndPortalId(vo.getSiteId(), vo.getPortalId());
+            if (portalNew == null) {
+                return new ApiResult(Errors.PORTAL_NOT_EXIST_ERROR);
+            }
+        }
+
+        ApiResult result = updateSsidAndBindStatus(vo, wireless, portalNew, context);
+        if (!result.isSuccess()) {
+            return result;
+        }
+
+        if (result.getResult() != null) {
+            SsidConfigTarget target = (SsidConfigTarget) result.getResult();
+            sendSsidPortalMqMsg(vo.getSiteId(), context, ConfigType.edit, target);
+        }
+        return new ApiResult(Errors.SUCCESS, WirelessAdaptor.toSsidVO(wirelessDao.findBySiteIdAndWirelessId(vo.getSiteId(), wireless.getWirelessId())));
+    }
+
+    @Transactional
+    public ApiResult updateSsidAndBindStatus(SsidVO vo, Ssid wireless, Portal portalNew, Context context) {
+        SsidConfigTarget target;
+        List<WirelessBind> wirelessBindList = wirelessBindDao.findBySiteIdAndSsid(vo.getSiteId(), vo.getWirelessId());
+        if (CollectionUtils.isEmpty(wirelessBindList)) {
+            ssidDao.save(WirelessAdaptor.toSsid(vo, wireless));
+            return new ApiResult(Errors.SUCCESS);
+        }
+
+        Long portalId = wireless.getPortalId();
+        boolean isPortalChanged = false;
+        if ((portalId == null || portalId == 0L) && (vo.getPortalId() != null && vo.getPortalId() != 0L)) {
+            isPortalChanged = true;
+        }
+        if ((portalId != null && portalId != 0L) && !portalId.equals(vo.getPortalId())) {
+            isPortalChanged = true;
+        }
+        Set<Long> needToAddPortalSet = new HashSet<>();
+        Set<Long> needToChangePortalSet = new HashSet<>();
+        Long removedPortalId = null;
+        if (isPortalChanged) {
+            removedPortalId = portalId;
+//            portal发生了更换，检查规格数，绑定关系发生更新，发送ssid/portal消息
+            if (vo.getPortalId() != null && vo.getPortalId() != 0L) {
+//              检查规格，判断addPortal
+                Map<Long, Boolean> belongDevicePortalMap = new ConcurrentHashMap<>();
+                Map<Long, Boolean> belongDevceSupportSlpMap = new ConcurrentHashMap<>();
+
+                for (WirelessBind bind : wirelessBindList) {
+                    RedisDevice redisDevice = DeviceRedissonApi.getInstance().getRedisDevice(bind.getSiteId(), bind.getBelongDeviceIndex());
+                    if (redisDevice == null) {
+                        return new ApiResult(Errors.DEVICE_NOT_EXIST_ERROR);
+                    }
+                    if (DeviceUtil.isAp(redisDevice.getDeviceType())) {
+//                        fat ap 不允许绑定portal
+                        return new ApiResult(Errors.BIND_STATUS_INVALID_ERROR);
+                    }
+//                更新绑定关系
+                    Long oldPortalId = bind.getPortalId();
+                    Long oldPortalPageId = bind.getPortalPageId();
+
+                    Boolean supportSlp = belongDevceSupportSlpMap.get(bind.getBelongDeviceIndex());
+                    if(supportSlp == null) {
+                        DeviceApi deviceApi = SpringContextHolder.getBean(DeviceApi.class);
+                        DeviceRedissonApi deviceRedissonApi = DeviceRedissonApi.getInstance();
+                        RedisDevice rd = deviceRedissonApi.getRedisDevice(vo.getSiteId(), bind.getBelongDeviceIndex());
+                        supportSlp = deviceApi.supportSlp(wireless.getSiteId(), rd.getDeviceMac());
+
+                        belongDevceSupportSlpMap.put(bind.getBelongDeviceIndex(), supportSlp);
+                    }
+
+                    if(!supportSlp) {
+                        Boolean exist = belongDevicePortalMap.get(bind.getBelongDeviceIndex());
+                        if (exist == null) {
+                            exist = wirelessBindDao.existBelongDevicePortal(vo.getSiteId(), vo.getPortalId(), bind.getBelongDeviceIndex());
+                            belongDevicePortalMap.put(bind.getBelongDeviceIndex(), exist);
+                        }
+                        if (exist) {
+                            continue;
+                        }
+                    }
+
+
+
+                    int ssidCount = wirelessBindDao.countSsidByBelongDeviceAndPortal(vo.getSiteId(), bind.getBelongDeviceIndex(), oldPortalId);
+                    int portalCount = wirelessBindDao.countPortalByBelongDevice(vo.getSiteId(), bind.getBelongDeviceIndex(), !supportSlp);
+                    int capacityPortal = capacityApi.getDevicePortalMaxBySiteIdAndDeviceIndex(vo.getSiteId(), bind.getBelongDeviceIndex());
+
+                    boolean isPortalPageChanged = true;
+                    if (oldPortalId != null && oldPortalId != 0 && portalNew.getPortalPageId().equals(oldPortalPageId)) {
+                        isPortalPageChanged = false;
+                    }
+
+                    if (isPortalPageChanged) {
+
+                        int ssidCountPage = wirelessBindDao.countSsidByBelongDeviceAndPortalPage(vo.getSiteId(), bind.getBelongDeviceIndex(), oldPortalPageId);
+                        int portalPageCount = wirelessBindDao.countPortalPageByBelongDevice(vo.getSiteId(), bind.getBelongDeviceIndex());
+                        int capacityPortalPage = capacityApi.getDevicePortalPageMaxBySiteIdAndDeviceIndex(vo.getSiteId(), bind.getBelongDeviceIndex());
+
+                        boolean portalPageExist = wirelessBindDao.existBelongDevicePortalPage(vo.getSiteId(), portalNew.getPortalPageId(), bind.getBelongDeviceIndex());
+
+                        if(!portalPageExist) {
+                            if (oldPortalPageId != null && ssidCountPage == 1 && portalPageCount == capacityPortalPage) {
+                                needToChangePortalSet.add(bind.getBelongDeviceIndex());
+                            } else if (portalPageCount >= capacityPortalPage) {
+                                return new ApiResult(Errors.PORTAL_PAGE_NUM_EXCEED_ERROR);
+                            }
+                        }
+                    }
+
+//                    发生了更换portal,并且之前portal非无认证，需要替换设备portal
+                    if (oldPortalId != null && ssidCount == 1 && portalCount == capacityPortal) {
+                        needToChangePortalSet.add(bind.getBelongDeviceIndex());
+                    } else if (portalCount >= capacityPortal) {
+                        return new ApiResult(Errors.ERR_PORTAL_NUM_EXCEED);
+                    }
+
+                    bind.setPortalId(portalNew.getPortalId());
+                    bind.setPortalPageId(portalNew.getPortalPageId());
+
+//                    addPortal to device
+                    needToAddPortalSet.add(bind.getBelongDeviceIndex());
+                }
+            } else {
+//                portal从有到无，不用检查规格，只需要更新绑定关系即可
+                for (WirelessBind bind : wirelessBindList) {
+                    bind.setPortalId(null);
+                    bind.setPortalPageId(null);
+                }
+            }
+            wirelessBindDao.batchUpdate(wirelessBindList);
+        }
+        ssidDao.save(WirelessAdaptor.toSsid(vo, wireless));
+//            向设备发送更新ssid消息,组建SSIDTarget
+        target = buildUpdateSsidMsg(vo.getSiteId(), vo.getWirelessId(), vo.getPortalId(), wirelessBindList, needToAddPortalSet, needToChangePortalSet);
+        target.setRemovedPortalId(removedPortalId);
+        return new ApiResult(Errors.SUCCESS, target);
+    }
+
+    private SsidConfigTarget buildUpdateSsidMsg(Long siteId, Long wirelessId, Long portalId, List<WirelessBind> wirelessBindList, Set<Long> needToAddPortalSet, Set<Long> needToChangePortalSet) {
+        SsidConfigTarget target = new SsidConfigTarget();
+        target.setSsidId(wirelessId);
+        target.setPortalId(portalId);
+//        List<SsidConfigTarget.SsidBindParam> ssidBindParamList = new ArrayList<>();
+        final Map<Long, SsidConfigTarget.SsidBindParam> ssidBindParamMap = new HashMap<>();
+        for (WirelessBind bind : wirelessBindList) {
+            RedisDevice redisDevice = DeviceRedissonApi.getInstance().getRedisDevice(siteId, bind.getBelongDeviceIndex());
+            if (redisDevice == null) {
+                continue;
+            }
+//            ssidBindParamList.add(new SsidConfigTarget.SsidBindParam(bind.getBelongDeviceIndex(), redisDevice, true, false, ConfigType.edit, null, null));
+            ssidBindParamMap.put(bind.getBelongDeviceIndex(), new SsidConfigTarget.SsidBindParam(bind.getBelongDeviceIndex(), redisDevice, true, needToAddPortalSet.contains(bind.getBelongDeviceIndex()), needToChangePortalSet.contains(bind.getBelongDeviceIndex()), ConfigType.edit));
+        }
+        if (!CollectionUtils.isEmpty(ssidBindParamMap)) {
+            target.setSsidBindParamList(new ArrayList<SsidConfigTarget.SsidBindParam>() {{
+                addAll(ssidBindParamMap.values());
+            }});
+            return target;
+        } else {
+            return null;
+        }
+    }
+
+    public ApiResult switchWirelessStatus(SiteSwitchVO vo, Context context) {
+        if (vo == null) {
+            return ApiResult.INVALID_PARAMS;
+        }
+
+        StringBuilder operSsid = new StringBuilder();
+        ApiResult result = new ApiResult(Errors.SUCCESS);
+        for (Long wirelessId : vo.getIdList()) {
+            Ssid wireless = ssidDao.findBySiteIdAndWirelessId(vo.getSiteId(), wirelessId);
+            if (wireless == null) {
+                return new ApiResult(Errors.WIRELESS_NOT_EXIST_ERROR);
+            }
+            SsidVO wirelessVO = WirelessAdaptor.toSsidVO(wireless);
+            wirelessVO.setSsidEnable(vo.getTargetStatus());
+
+            result = updateSsid(wirelessVO, context);
+            if (!result.isSuccess()) {
+                return result;
+            }
+            operSsid.append(wirelessVO.getSsidName());
+        }
+        result.setResult(operSsid.toString());
+        return result;
+    }
+
+    public void buildBelongDeviceCapacity(Long siteId, Collection<Long> belongDeviceCollection, Map<Long, CapacityCount> capacityCountMap, Map<Long, Map<Long, List<WirelessBindCapacity>>> existWirelessBind) {
+        Map<Long, List<WirelessBindCapacity>> bindCapacities = wirelessBindDao.getDeviceCapacityAndCurrentCount(siteId, belongDeviceCollection);
+        Map<Long, MngtCapacity> deviceToMngtCapacityMap =
+                capacityApi.getDeviceMngtCapacities(siteId, new LinkedList<>(belongDeviceCollection));
+
+        if (!CollectionUtils.isEmpty(bindCapacities)) {
+            for (Long belongDeviceIndex : bindCapacities.keySet()) {
+                Map<Long, List<WirelessBindCapacity>> radioWirelessBindMap = new HashMap<>();
+                existWirelessBind.put(belongDeviceIndex, radioWirelessBindMap);
+                List<WirelessBindCapacity> capacities = bindCapacities.get(belongDeviceIndex);
+
+                HashSet<Long> currentSsid = new HashSet<>();
+                HashSet<Long> currentPortal = new HashSet<>();
+                HashSet<Long> currentPortalPage = new HashSet<>();
+                HashSet<Long> ssidForWvrAp = new HashSet<>();
+
+                Set<Long> ssidHasPortal = new HashSet<>();
+
+                String deviceType = null;
+                int maxSsid = 0;
+                int maxPortal = 0;
+                int maxPortalPage = 0;
+                if (deviceToMngtCapacityMap.containsKey(belongDeviceIndex)) {
+                    MngtCapacity mngtCapacity = deviceToMngtCapacityMap.get(belongDeviceIndex);
+                    deviceType = mngtCapacity.getDeviceType();
+                    maxSsid = mngtCapacity.getMaxSsid();
+                    maxPortal = mngtCapacity.getMaxPortal();
+                    maxPortalPage = mngtCapacity.getMaxPortalPage();
+                }
+
+                if (!CollectionUtils.isEmpty(capacities)) {
+                    for (WirelessBindCapacity wbc : capacities) {
+                        if(radioWirelessBindMap.get(wbc.getRadioId()) == null) {
+                            radioWirelessBindMap.put(wbc.getRadioId(), new ArrayList<WirelessBindCapacity>());
+                        }
+
+                        radioWirelessBindMap.get(wbc.getRadioId()).add(wbc);
+
+                        currentSsid.add(wbc.getWirelessId());
+
+                        if (wbc.getPortalId() != null) {
+                            currentPortal.add(wbc.getPortalId());
+                            ssidHasPortal.add(wbc.getWirelessId());
+                        }
+
+                        if (wbc.getPortalPageId() != null) {
+                            currentPortalPage.add(wbc.getPortalPageId());
+                        }
+
+                        if (!DeviceType.SMBWIRELESSROUTER.name().equals(wbc.getDeviceType())) {
+                            ssidForWvrAp.add(wbc.getWirelessId());
+                        }
+                    }
+                }
+
+                CapacityCount cc = new CapacityCount(currentSsid, currentPortal, currentPortalPage, maxSsid, maxPortal, maxPortalPage, deviceType);
+                cc.setSsidForApUnderWvr(ssidForWvrAp);
+                cc.setSsidHasPortalCount(ssidHasPortal.size());
+                capacityCountMap.put(belongDeviceIndex, cc);
+            }
+
+        }
+    }
+
+    private boolean needToCheckPortal(Long wirelessId, Long portalId, Map<Long, List<WirelessBindCapacity>> radioWirelessBindCapacity) {
+        if(portalId == null || portalId == 0) {
+            return false;
+        }
+
+        if(CollectionUtils.isEmpty(radioWirelessBindCapacity)) {
+            return true;
+        }
+
+        for(List<WirelessBindCapacity> wbcList : radioWirelessBindCapacity.values()) {
+            for(WirelessBindCapacity wbc : wbcList) {
+                if(portalId.equals(wbc.getPortalId()) && wbc.getWirelessId().equals(wirelessId)) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
+    }
+
+    @SiteLock
+    public ApiResult bindWirelessV2(SsidDeviceVO vo, Context context) {
+        return bindWirelessV2(vo, context, true);
+    }
+
+    @SiteLock
+    public ApiResult bindWirelessV2(SsidDeviceVO vo, Context context, boolean sendMsg) {
+        if (vo == null || CollectionUtils.isEmpty(vo.getDeviceRadioVidList()) || CollectionUtils.isEmpty(vo.getSsidList())) {
+            return ApiResult.INVALID_PARAMS;
+        }
+        final long siteId = vo.getSiteId();
+
+        Map<Long, List<DeviceRadioVidBindVO>> deviceBindMap = new HashMap<>();
+
+        List<Long> deviceIndexs = new ArrayList<>();
+        for (DeviceRadioVidBindVO bindVO : vo.getDeviceRadioVidList()) {
+            deviceIndexs.add(bindVO.getDeviceIndex());
+        }
+
+        Map<Long, Device> deviceMap = deviceDao.findDeviceMap(siteId, deviceIndexs);
+
+        if (CollectionUtils.isEmpty(deviceMap)) {
+            return new ApiResult(Errors.DEVICE_NOT_EXIST_ERROR);
+        }
+
+        for (DeviceRadioVidBindVO bindVO : vo.getDeviceRadioVidList()) {
+            Device d = deviceMap.get(bindVO.getDeviceIndex());
+
+            if (d != null) {
+                Long belongIndex = d.getBelongDevice();
+
+                if (belongIndex == null) {
+                    belongIndex = d.getId();
+                }
+
+                deviceBindMap.computeIfAbsent(belongIndex, k -> new ArrayList<>());
+
+                deviceBindMap.get(belongIndex).add(bindVO);
+            }
+        }
+
+        if (CollectionUtils.isEmpty(deviceBindMap)) {
+            return new ApiResult(Errors.SUCCESS);
+        }
+
+        Set<Long> belongDeviceIndexList = deviceBindMap.keySet();
+        Map<Long, RadioCapacity> deviceToRadioCapacityMap =
+                capacityApi.getDeviceRadioCapacities(siteId, deviceIndexs, deviceMap, belongDeviceIndexList);
+
+        Map<Long, CapacityCount> capacityCountMap = new HashMap<>();
+        Map<Long, Map<Long, List<WirelessBindCapacity>>> existWirelessBind = new HashMap<>();
+        buildBelongDeviceCapacity(siteId, belongDeviceIndexList, capacityCountMap, existWirelessBind);
+
+        for (Long wirelessId : vo.getSsidList()) {
+            Wireless w = wirelessDao.findBySiteIdAndWirelessId(siteId, wirelessId);
+
+            if (w == null) {
+                logger.warn("Cannot find the wireless item in db, just continue.");
+                continue;
+            }
+
+            boolean portalExceed = false;
+            boolean portalPageExceed = false;
+            boolean ssidExceed = false;
+            boolean hasPortal = w.getPortalId() != null && w.getPortalId() != 0;
+            for (Long belongDeviceIndex : capacityCountMap.keySet()) {
+
+                boolean needCheckPortal = needToCheckPortal(wirelessId, w.getPortalId(), existWirelessBind.get(belongDeviceIndex));
+
+                logger.debug("need to check portal : {}", needCheckPortal);
+                CapacityCount cc = capacityCountMap.get(belongDeviceIndex);
+
+                if (!DeviceUtil.isAC(cc.getDeviceType())
+                        && !DeviceUtil.isL1ChassisSwitch(cc.getDeviceType()) // 由于交换机不会作为belongDevice，故如果为L1机框，肯定是MPU，下面同理
+                        && !DeviceUtil.isWirelessRouter(cc.getDeviceType())
+                        && !DeviceUtil.isRouter(cc.getDeviceType())) {
+                    //fat ap has portal, remove it.
+                    if (hasPortal) {
+                        deviceBindMap.remove(belongDeviceIndex);
+                    }
+                } else {
+                    if (DeviceUtil.isAC(cc.getDeviceType())
+                            || DeviceUtil.isL1ChassisSwitch(cc.getDeviceType())
+                            || DeviceUtil.isRouter(cc.getDeviceType())) {
+                        if (!cc.getSsidSet().contains(w.getWirelessId())
+                                && cc.getSsidSet().size() >= cc.getMaxSsid()) {
+                            deviceBindMap.remove(belongDeviceIndex);
+                            ssidExceed = true;
+                        }
+                    }
+
+                    if (DeviceUtil.isWirelessRouter(cc.getDeviceType())) {
+                        if (!cc.getSsidForApUnderWvr().contains(w.getWirelessId())
+                                && cc.getSsidForApUnderWvr().size() >= cc.getMaxSsid()) {
+                            deviceBindMap.remove(belongDeviceIndex);
+                            ssidExceed = true;
+                        }
+                    }
+
+                    if (hasPortal) {
+                        DeviceApi deviceApi = SpringContextHolder.getBean(DeviceApi.class);
+                        DeviceRedissonApi deviceRedissonApi = DeviceRedissonApi.getInstance();
+                        RedisDevice rd = deviceRedissonApi.getRedisDevice(vo.getSiteId(), belongDeviceIndex);
+                        boolean supportSlp = deviceApi.supportSlp(siteId, rd.getDeviceMac());
+
+                        if (supportSlp && cc.getSsidHasPortalCount() >= cc.getMaxPortal() && needCheckPortal) {
+                            deviceBindMap.remove(belongDeviceIndex);
+                            portalExceed = true;
+                        }
+
+                        if (!cc.getPortalSet().contains(w.getPortalId())
+                                && cc.getPortalSet().size() >= cc.getMaxPortal()) {
+                            deviceBindMap.remove(belongDeviceIndex);
+                            portalExceed = true;
+                        }
+
+                        if (!cc.getPortalPageSet().contains(w.getPortal().getPortalPageId())
+                                && cc.getPortalPageSet().size() >= cc.getMaxPortalPage()) {
+                            deviceBindMap.remove(belongDeviceIndex);
+                            portalPageExceed = true;
+                        }
+                    }
+                }
+            }
+
+            if (!CollectionUtils.isEmpty(deviceBindMap)) {
+                List<Long> radioIdList = new ArrayList<>();
+                Map<Long, RadioVidVO> tmpMap = new HashMap<>();
+                for (List<DeviceRadioVidBindVO> bindVO : deviceBindMap.values()) {
+                    for (DeviceRadioVidBindVO drvb : bindVO) {
+                        for (RadioVidVO rbv : drvb.getRadioVidList()) {
+                            radioIdList.add(rbv.getRadioId());
+                            tmpMap.put(rbv.getRadioId(), rbv);
+                        }
+                    }
+                }
+
+                List<Radio> radios = radioDao.findBySiteIdAndRadioId(siteId, radioIdList);
+                Map<Long, Radio> radioMap = new HashMap<>();
+                Map<Long, List<Radio>> deviceRadioMap = new HashMap<>();
+                Map<Long, RadioVidVO> targetVidMap = new HashMap<>();
+                Set<Long> deviceIndexList = new HashSet<>();
+                radioIdList.clear();
+
+                for (Radio r : radios) {
+                    deviceIndexList.add(r.getDeviceIndex());
+                    deviceRadioMap.computeIfAbsent(r.getDeviceIndex(), k -> new ArrayList<>());
+                    deviceRadioMap.get(r.getDeviceIndex()).add(r);
+                    radioIdList.add(r.getRadioId());
+                    targetVidMap.put(r.getRadioId(), tmpMap.get(r.getRadioId()));
+                    radioMap.put(r.getRadioId(), r);
+                }
+
+                Map<Long, List<RadioCapacity>> deviceRadioCapacityMap = wirelessBindDao.getDeviceRadioCapacity(siteId, deviceIndexList);
+
+                List<RadioVidVO> addRadioList = new ArrayList<>();
+                List<RadioVidVO> editRadioList = new ArrayList<>();
+
+                if (CollectionUtils.isEmpty(deviceRadioCapacityMap)) {
+                    addRadioList.addAll(targetVidMap.values());
+                } else {
+                    for (Long deviceIndex : deviceRadioCapacityMap.keySet()) {
+                        List<RadioCapacity> capacities = deviceRadioCapacityMap.get(deviceIndex);
+                        RadioCapacity radioCapacity = deviceToRadioCapacityMap.get(deviceIndex);
+
+                        if (!CollectionUtils.isEmpty(capacities)) {
+                            Map<Long, Boolean> removeRadioIdMap = new HashMap<>();
+                            Map<Long, Boolean> existWbMap = new HashMap<>();
+                            Map<String, List<Long>> unitRadioMap = new HashMap<>();
+                            Map<String, Integer> radioUnitCount = new HashMap<>();
+                            for (RadioCapacity rc : deviceRadioCapacityMap.get(deviceIndex)) {
+                                if (rc.getWirelessId().equals(w.getWirelessId())) {
+                                    existWbMap.put(rc.getRadioId(), true);
+                                }
+                                if (radioUnitCount.get(rc.getRadioUnit()) == null) {
+                                    radioUnitCount.put(rc.getRadioUnit(), 1);
+                                    unitRadioMap.put(rc.getRadioUnit(), new ArrayList<Long>());
+                                } else {
+                                    radioUnitCount.put(rc.getRadioUnit(), radioUnitCount.get(rc.getRadioUnit()) + 1);
+                                }
+                                unitRadioMap.get(rc.getRadioUnit()).add(rc.getRadioId());
+
+                                if (rc.getWirelessId().equals(w.getWirelessId())) {
+                                    continue;
+                                }
+                            }
+
+                            if (!CollectionUtils.isEmpty(radioUnitCount)) {
+                                for (String unit : radioUnitCount.keySet()) {
+                                    if (radioUnitCount.get(unit) >= getRadioUnitMaxSsid(unit, radioCapacity)) {
+                                        for (Long radioId : unitRadioMap.get(unit)) {
+                                            if (existWbMap.get(radioId) == null) {
+                                                targetVidMap.remove(radioId);
+                                                removeRadioIdMap.put(radioId, true);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            for (Radio r : deviceRadioMap.get(deviceIndex)) {
+                                if (removeRadioIdMap.get(r.getRadioId()) == null) {
+                                    if (existWbMap.get(r.getRadioId()) != null) {
+                                        editRadioList.add(targetVidMap.remove(r.getRadioId()));
+                                    } else {
+                                        addRadioList.add(targetVidMap.remove(r.getRadioId()));
+                                    }
+                                }
+                            }
+                        } else {
+                            for (Radio r : deviceRadioMap.get(deviceIndex)) {
+                                addRadioList.add(targetVidMap.get(r.getRadioId()));
+                            }
+                        }
+                    }
+
+                    if (!CollectionUtils.isEmpty(targetVidMap)) {
+                        addRadioList.addAll(targetVidMap.values());
+                    }
+                }
+
+
+                if (!CollectionUtils.isEmpty(addRadioList) || !CollectionUtils.isEmpty(editRadioList)) {
+                    List<WirelessBind> addList = new ArrayList<>();
+                    List<WirelessBind> updateList = new ArrayList<>();
+                    Map<Long, RedisDevice> belongDeviceCache = new HashMap<>();
+                    Map<Long, SsidConfigTarget.SsidBindParam> belongDeviceMap = new HashMap<>();
+                    SsidConfigTarget target = new SsidConfigTarget();
+                    target.setSsidId(wirelessId);
+
+                    boolean existPortal = w.getPortalId() != null && w.getPortalId() != 0;
+                    target.setPortalId(existPortal ? w.getPortalId() : null);
+
+
+                    HashSet<Long> targetDeviceSet = new HashSet<>();
+                    if (!CollectionUtils.isEmpty(addRadioList)) {
+                        for (final RadioVidVO rvv : addRadioList) {
+                            Long deviceIndex = radioMap.get(rvv.getRadioId()).getDeviceIndex();
+                            targetDeviceSet.add(deviceIndex);
+                            Device device = deviceMap.get(deviceIndex);
+                            Long belongDeviceIndex = device.getBelongDevice() == null ? deviceIndex : device.getBelongDevice();
+
+                            WirelessBind bindStatus;
+                            bindStatus = new WirelessBind();
+                            bindStatus.setId(SnowflakeHolder.nextId());
+                            bindStatus.setSiteId(siteId);
+
+                            bindStatus.setDeviceIndex(deviceIndex);
+                            bindStatus.setBelongDeviceIndex(belongDeviceIndex);
+                            bindStatus.setRadioId(rvv.getRadioId());
+                            bindStatus.setRadioUnit(radioMap.get(rvv.getRadioId()).getRadioUnit());
+                            bindStatus.setWirelessId(wirelessId);
+                            bindStatus.setPortalId(w.getPortal() == null ? null : w.getPortal().getPortalId());
+                            bindStatus.setPortalPageId(w.getPortal() == null ? null : w.getPortal().getPortalPageId());
+                            bindStatus.setVid(rvv.getVid());
+
+                            addList.add(bindStatus);
+
+                            mergeWirelessBind(rvv, radioMap, deviceMap, belongDeviceMap, vo, existWirelessBind, w, existPortal, belongDeviceCache);
+
+                        }
+                    }
+
+
+                    if (!CollectionUtils.isEmpty(editRadioList)) {
+                        for (final RadioVidVO rvv : editRadioList) {
+                            Long deviceIndex = radioMap.get(rvv.getRadioId()).getDeviceIndex();
+                            Device device = deviceMap.get(deviceIndex);
+                            targetDeviceSet.add(deviceIndex);
+                            Long belongDeviceIndex = device.getBelongDevice() == null ? deviceIndex : device.getBelongDevice();
+
+                            List<WirelessBindCapacity> wbcList = existWirelessBind.get(belongDeviceIndex).get(rvv.getRadioId());
+
+                            if (!CollectionUtils.isEmpty(wbcList)) {
+
+                                for (WirelessBindCapacity wbc : wbcList) {
+                                    if (wirelessId.equals(wbc.getWirelessId())) {
+                                        WirelessBind bindStatus = wbc.toWirelessBind();
+
+                                        bindStatus.setVid(rvv.getVid());
+                                        updateList.add(bindStatus);
+
+                                        mergeWirelessBind(rvv, radioMap, deviceMap, belongDeviceMap, vo, existWirelessBind, w, existPortal, belongDeviceCache);
+                                        break;
+                                    }
+                                }
+                            }
+
+
+                        }
+                    }
+
+                    target.setSsidBindParamList(new ArrayList<>(belongDeviceMap.values()));
+
+                    if (!CollectionUtils.isEmpty(addList)) {
+                        wirelessBindDao.batchAdd(addList);
+                    }
+
+                    if (!CollectionUtils.isEmpty(updateList)) {
+//                                mergeUnbindWirelessBind(vo.getSiteId(), updateList, target, deviceMap, belongDeviceCache);
+                        Map<Integer, List<WirelessBind>> map = new HashMap<>();
+                        for (WirelessBind wirelessBind : updateList) {
+                            if (map.get(wirelessBind.getVid()) == null) {
+                                List<WirelessBind> wb = new ArrayList<>();
+                                wb.add(wirelessBind);
+                                map.put(wirelessBind.getVid(), wb);
+                            } else {
+                                map.get(wirelessBind.getVid()).add(wirelessBind);
+                            }
+                        }
+                        for (Integer vid : map.keySet()) {
+                            wirelessBindDao.updateVids(map.get(vid));
+                        }
+                    }
+
+//                            if (!CollectionUtils.isEmpty(updateList)) {
+//                                wirelessBindDao.updateVids(updateList);
+//                            }
+
+                    if(sendMsg) {
+                        sendSsidPortalMqMsgWithDelay(siteId, context, ConfigType.bind, target);
+                    }
+
+                    String opLog = "绑定无线服务[%s]到[%s]台设备的[%s]条射频";
+
+                    AlarmUtil.sendAlarm(siteId, LogOpType.UPDATE, AlarmUtil.ALARM_CONFIG_MODULE_CONFIG, LogOpResult.success,
+                            opLog, w.getSsidName(), String.valueOf(targetDeviceSet.size()), String.valueOf(addList.size() + updateList.size()));
+
+                    return new ApiResult(Errors.SUCCESS);
+                }
+            }
+
+            return new ApiResult(ssidExceed ? Errors.WIRELESS_SSID_OVER_LIMIT_ERROR :
+                    portalExceed ? Errors.ERR_PORTAL_NUM_EXCEED :
+                    portalPageExceed ? Errors.PORTAL_PAGE_NUM_EXCEED_ERROR : Errors.OUT_OF_DEVICE_SPEC_ERROR);
+        }
+
+        return new ApiResult(Errors.SUCCESS);
+    }
+
+    private void setDeviceWirelessWaitingFlag(List<SsidConfigTarget.SsidBindParam> bindParams) {
+        if(!CollectionUtils.isEmpty(bindParams)) {
+            for(SsidConfigTarget.SsidBindParam sbp : bindParams) {
+                RList<String> wwFlag = redissonClient.getList(WIRELESS_BIND_UNBIND_WAITING_FLAG + sbp.getBelongDeviceIndex());
+                if(wwFlag.isEmpty()) {
+                    wwFlag.add("");
+                }
+
+                wwFlag.expire(WIRELESS_DELAY_TIME, TimeUnit.SECONDS);
+            }
+        }
+    }
+
+    private boolean sendWirelessDelay(Long deviceIndex) {
+        RList<String> wwFlag = redissonClient.getList(WIRELESS_BIND_UNBIND_WAITING_FLAG + deviceIndex);
+
+        return !wwFlag.isEmpty();
+    }
+
+    private void mergeUnbindWirelessBind(Long siteId, List<WirelessBind> updateVidList, SsidConfigTarget target, Map<Long, Device> deviceMap, Map<Long, RedisDevice> belongDeviceCache) {
+        Map<Long, List<WirelessBind>> belongDeviceWirelessBindGroup = new HashMap<>();
+
+        List<SsidConfigTarget.SsidBindParam> unbindParamList = new ArrayList<>();
+        for(WirelessBind wb : updateVidList) {
+            if(belongDeviceWirelessBindGroup.get(wb.getBelongDeviceIndex()) == null) {
+                belongDeviceWirelessBindGroup.put(wb.getBelongDeviceIndex(), new ArrayList<WirelessBind>());
+            }
+
+            belongDeviceWirelessBindGroup.get(wb.getBelongDeviceIndex()).add(wb);
+        }
+
+        for(Map.Entry<Long, List<WirelessBind>> bindEntry : belongDeviceWirelessBindGroup.entrySet()) {
+            SsidConfigTarget.SsidBindParam param = new SsidConfigTarget.SsidBindParam();
+            long belongDeviceIndex = bindEntry.getKey();
+            RedisDevice belongDevice = belongDeviceCache.get(belongDeviceIndex);
+
+            if(belongDevice == null) {
+                logger.info("failed to get belong device info for id : {}", belongDeviceIndex);
+                continue;
+            }
+
+            List<SsidConfigTarget.DeviceRadioBindParam> bindParams = buildDeviceRadioBindParamList(bindEntry.getValue(), deviceMap);
+
+            if(!CollectionUtils.isEmpty(bindParams)) {
+                param.setBelongDevice(belongDevice);
+                param.setBelongDeviceIndex(belongDeviceIndex);
+                param.setConfigType(ConfigType.unbind);
+                param.setUnbindRadioList(bindParams);
+
+                unbindParamList.add(param);
+            }
+        }
+
+        if(!CollectionUtils.isEmpty(unbindParamList)) {
+            for(SsidConfigTarget.SsidBindParam sbp : unbindParamList) {
+                target.getSsidBindParamList().add(0, sbp);
+            }
+        }
+    }
+
+    private List<SsidConfigTarget.DeviceRadioBindParam> buildDeviceRadioBindParamList(List<WirelessBind> wirelessBinds, Map<Long, Device> deviceMap) {
+        if(CollectionUtils.isEmpty(wirelessBinds)) {
+            return null;
+        }
+        Map<String, List<SsidConfigTarget.RadioVlan>> macRadioVlanMap = new HashMap<>();
+
+        List<Long> radioIdList = new ArrayList<>();
+        Long siteId = wirelessBinds.get(0).getSiteId();
+        for(WirelessBind wb : wirelessBinds) {
+            radioIdList.add(wb.getRadioId());
+        }
+
+        Map<Long, String> devRadioMap = radioDao.findDeviceRadioIdMap(siteId, radioIdList);
+
+        for(WirelessBind wb : wirelessBinds) {
+            Device d = deviceMap.get(wb.getDeviceIndex());
+
+            if(d != null) {
+                String mac = d.getDeviceMac();
+
+                if(macRadioVlanMap.get(mac) == null) {
+                    macRadioVlanMap.put(mac, new ArrayList<SsidConfigTarget.RadioVlan>());
+                }
+
+                macRadioVlanMap.get(mac).add(new SsidConfigTarget.RadioVlan(wb.getRadioUnit(), wb.getVid(), devRadioMap.get(wb.getRadioId())));
+            }
+        }
+
+        List<SsidConfigTarget.DeviceRadioBindParam> paramList = new ArrayList<>();
+
+        if(!CollectionUtils.isEmpty(macRadioVlanMap)) {
+            for(Map.Entry<String, List<SsidConfigTarget.RadioVlan>> entry : macRadioVlanMap.entrySet()) {
+                SsidConfigTarget.DeviceRadioBindParam bp = new SsidConfigTarget.DeviceRadioBindParam();
+                bp.setDeviceMac(entry.getKey());
+                bp.setRadioList(entry.getValue());
+                paramList.add(bp);
+            }
+        }
+
+        return paramList;
+    }
+
+    private void mergeWirelessBind(final RadioVidVO rvv, final Map<Long, Radio> radioMap, Map<Long, Device> deviceMap,
+                                   Map<Long, SsidConfigTarget.SsidBindParam> belongDeviceMap,
+                                   SsidDeviceVO vo, Map<Long, Map<Long, List<WirelessBindCapacity>>> existWirelessBind,
+                                   Wireless w, boolean existPortal, Map<Long, RedisDevice> belongDeviceCache) {
+        Long deviceIndex = radioMap.get(rvv.getRadioId()).getDeviceIndex();
+        Device device = deviceMap.get(deviceIndex);
+
+        RedisDevice belongDevice = null;
+//        if (device.getBelongDevice() == null) {
+//            device.setBelongDevice(deviceIndex);
+//        }
+
+        if(device == null) {
+            return;
+        }
+
+        if (device.getBelongDevice() != null) {
+            belongDevice = belongDeviceCache.get(device.getBelongDevice());
+
+            if (belongDevice == null) {
+                Device parentDevice = deviceMap.get(device.getBelongDevice());
+
+                if (parentDevice == null) {
+                    belongDevice = DeviceRedissonApi.getInstance().getRedisDevice(vo.getSiteId(), device.getBelongDevice());
+
+                    if (belongDevice == null) {
+                        return;
+                    } else {
+                        belongDeviceCache.put(device.getBelongDevice(), belongDevice);
+                    }
+                } else {
+                    belongDevice = DeviceAdaptor.toRedisDevice(parentDevice);
+                }
+            }
+
+        }else {
+            belongDevice = DeviceAdaptor.toRedisDevice(device);
+        }
+
+        if (belongDevice == null) {
+            return;
+        }
+
+        Long belongDeviceIndex = device.getBelongDevice() == null ? deviceIndex : device.getBelongDevice();
+
+
+        SsidConfigTarget.SsidBindParam ssidBindParam = belongDeviceMap.get(belongDeviceIndex);
+
+        if (ssidBindParam == null) {
+            ssidBindParam = new SsidConfigTarget.SsidBindParam();
+            ssidBindParam.setBelongDeviceIndex(belongDeviceIndex);
+            ssidBindParam.setBelongDevice(belongDevice);
+            ssidBindParam.setConfigType(ConfigType.bind);
+
+            Map<Long, List<WirelessBindCapacity>> capacityMap = existWirelessBind.get(belongDeviceIndex);
+            boolean needToSendSsid = false, needToSendPortal = false;
+
+            if (CollectionUtils.isEmpty(capacityMap)) {
+                needToSendSsid = true;
+
+                if (existPortal) {
+                    needToSendPortal = true;
+                }
+            } else {
+                needToSendSsid = true;
+                if(existPortal) {
+                    needToSendPortal = true;
+                }
+
+                for (List<WirelessBindCapacity> wbcList : capacityMap.values()) {
+                    for(WirelessBindCapacity wbc : wbcList) {
+                        if (w.getWirelessId().equals(wbc.getWirelessId())) {
+                            needToSendSsid = false;
+                        }
+
+                        if (existPortal) {
+                            if (w.getPortalId().equals(wbc.getPortalId())) {
+                                needToSendPortal = false;
+                            }
+                        }
+                    }
+                }
+            }
+
+            ssidBindParam.setNeedToSendSsid(needToSendSsid);
+            ssidBindParam.setNeedToSendPortal(needToSendPortal);
+
+            List<SsidConfigTarget.DeviceRadioBindParam> bindRadioList = new ArrayList<>();
+            SsidConfigTarget.DeviceRadioBindParam deviceRadioBindParam = new SsidConfigTarget.DeviceRadioBindParam();
+            deviceRadioBindParam.setDeviceMac(device.getDeviceMac());
+
+            deviceRadioBindParam.setRadioList(new ArrayList<SsidConfigTarget.RadioVlan>() {
+                private static final long serialVersionUID = -7799384750627467618L;
+
+                {
+                    Radio r = radioMap.get(rvv.getRadioId());
+                    add(new SsidConfigTarget.RadioVlan(r.getRadioUnit(), rvv.getVid(), r.getDeviceRadioId()));
+                }
+            });
+            bindRadioList.add(deviceRadioBindParam);
+            ssidBindParam.setBindRadioList(bindRadioList);
+            belongDeviceMap.put(belongDeviceIndex, ssidBindParam);
+        } else {
+            List<SsidConfigTarget.DeviceRadioBindParam> bindRadioList = ssidBindParam.getBindRadioList();
+            boolean deviceExist = false;
+            for (SsidConfigTarget.DeviceRadioBindParam param : bindRadioList) {
+                if (device.getDeviceMac().equals(param.getDeviceMac())) {
+                    deviceExist = true;
+                    Radio r = radioMap.get(rvv.getRadioId());
+                    param.getRadioList().add(new SsidConfigTarget.RadioVlan(r.getRadioUnit(), rvv.getVid(), r.getDeviceRadioId()));
+                    break;
+                }
+            }
+
+            if (!deviceExist) {
+                SsidConfigTarget.DeviceRadioBindParam param = new SsidConfigTarget.DeviceRadioBindParam();
+                param.setDeviceMac(device.getDeviceMac());
+                param.setRadioList(new ArrayList<SsidConfigTarget.RadioVlan>() {
+                    private static final long serialVersionUID = -6118861344728128139L;
+
+                    {
+                        Radio r = radioMap.get(rvv.getRadioId());
+                        add(new SsidConfigTarget.RadioVlan(r.getRadioUnit(), rvv.getVid(), r.getDeviceRadioId()));
+                    }
+                });
+
+                bindRadioList.add(param);
+            }
+
+        }
+    }
+
+    private int getRadioUnitMaxSsid(String unit, RadioCapacity radioCapacity) {
+        switch (unit) {
+            case "2g1":
+                return parseInteger(radioCapacity.getMaxSsid2g1());
+            case "2g2":
+                return parseInteger(radioCapacity.getMaxSsid2g2());
+            case "2g3":
+                return parseInteger(radioCapacity.getMaxSsid2g3());
+            case "2g4":
+                return parseInteger(radioCapacity.getMaxSsid2g4());
+            case "5g1":
+                return parseInteger(radioCapacity.getMaxSsid5g1());
+            case "5g2":
+                return parseInteger(radioCapacity.getMaxSsid5g2());
+            case "5g3":
+                return parseInteger(radioCapacity.getMaxSsid5g3());
+            case "5g4":
+                return parseInteger(radioCapacity.getMaxSsid5g4());
+            default:
+                return 0;
+        }
+    }
+
+    @SiteLock
+    public ApiResult bindWireless(SsidDeviceVO vo, Context context) {
+        if (vo == null || CollectionUtils.isEmpty(vo.getDeviceRadioVidList()) || CollectionUtils.isEmpty(vo.getSsidList())) {
+            return ApiResult.INVALID_PARAMS;
+        }
+        ApiResult result = new ApiResult();
+        Set<Long> wirelessList = vo.getSsidList();
+        for (final Long wirelessId : wirelessList) {
+            Set<Long> set = new HashSet<>();
+            set.add(wirelessId);
+            vo.setSsidList(set);
+//        检查规格
+            result = checkWirelessBindParamAndSpec(vo);
+            if (!result.isSuccess()) {
+                return result;
+            }
+
+            result = saveBindStatusAndBuildConfigMsg(vo, (Map<Long, Wireless>) result.getResult());
+            if (result.isSuccess()) {
+                List<SsidConfigTarget> configMsgList = (List<SsidConfigTarget>) result.getResult();
+                for (SsidConfigTarget target : configMsgList) {
+                    sendSsidPortalMqMsg(vo.getSiteId(), context, ConfigType.bind, target);
+                }
+            }
+        }
+        result.setResult(null);
+        return result;
+    }
+
+    @SiteLock
+    public ApiResult unbindWirelessV2(SsidDeviceVO vo, Context context) {
+        if (vo == null || CollectionUtils.isEmpty(vo.getDeviceRadioVidList()) || CollectionUtils.isEmpty(vo.getSsidList())) {
+            return ApiResult.INVALID_PARAMS;
+        }
+
+        List<Long> deviceIndexs = new ArrayList<>();
+        List<Long> radioIdList = new ArrayList<>();
+        for (DeviceRadioVidBindVO bindVO : vo.getDeviceRadioVidList()) {
+            deviceIndexs.add(bindVO.getDeviceIndex());
+            for (RadioVidVO rvv : bindVO.getRadioVidList()) {
+                radioIdList.add(rvv.getRadioId());
+            }
+        }
+
+        Map<Long, Device> deviceMap = new HashMap<>();
+        if (deviceIndexs.size() > 500) {
+            List<List<Long>> groups = CommonUtil.splitList(deviceIndexs, 500);
+            for (List<Long> list : groups) {
+                Map<Long, Device> dm = deviceDao.findDeviceMap(vo.getSiteId(), list);
+                if (!CollectionUtils.isEmpty(dm)) {
+                    deviceMap.putAll(dm);
+                }
+            }
+        } else {
+            Map<Long, Device> dm = deviceDao.findDeviceMap(vo.getSiteId(), deviceIndexs);
+            if (!CollectionUtils.isEmpty(dm)) {
+                deviceMap.putAll(dm);
+            }
+        }
+
+        final Map<Long, String> deviceRadioIdMap = new HashMap<>();
+        if (radioIdList.size() > 500) {
+            List<List<Long>> ris = CommonUtil.splitList(radioIdList, 500);
+            for (List<Long> list : ris) {
+                Map<Long, String> drm = radioDao.findDeviceRadioIdMap(vo.getSiteId(), list);
+                if (!CollectionUtils.isEmpty(drm)) {
+                    deviceRadioIdMap.putAll(drm);
+                }
+            }
+        } else {
+            Map<Long, String> drm = radioDao.findDeviceRadioIdMap(vo.getSiteId(), radioIdList);
+            if (!CollectionUtils.isEmpty(drm)) {
+                deviceRadioIdMap.putAll(drm);
+            }
+        }
+
+        Map<Long, RedisDevice> belongDeviceCache = new HashMap<>();
+
+        if (CollectionUtils.isEmpty(deviceMap)) {
+            return new ApiResult(Errors.DEVICE_NOT_EXIST_ERROR);
+        }
+
+        for (Long wirelessId : vo.getSsidList()) {
+            Wireless w = wirelessDao.findBySiteIdAndWirelessId(vo.getSiteId(), wirelessId);
+
+            if (w == null) {
+                return new ApiResult(Errors.INVALID_PARAMS);
+            }
+
+            List<WirelessBind> totalBindList = new ArrayList<>();
+            if (radioIdList.size() > 500) {
+                List<List<Long>> ris = CommonUtil.splitList(radioIdList, 500);
+                for (List<Long> list : ris) {
+                    List<WirelessBind> wbl = wirelessBindDao.findBySiteIdAndWirelessAndRadioId(vo.getSiteId(), w.getWirelessId(), list);
+                    if (!CollectionUtils.isEmpty(wbl)) {
+                        totalBindList.addAll(wbl);
+                    }
+                }
+            } else {
+                List<WirelessBind> wbl = wirelessBindDao.findBySiteIdAndWirelessAndRadioId(vo.getSiteId(), w.getWirelessId(), radioIdList);
+                if (!CollectionUtils.isEmpty(wbl)) {
+                    totalBindList.addAll(wbl);
+                }
+            }
+
+            if (CollectionUtils.isEmpty(totalBindList)) {
+                return new ApiResult(Errors.SUCCESS);
+            }
+
+            List<WirelessBind> targetBindList = new ArrayList<>();
+
+            for (WirelessBind wb : totalBindList) {
+                if (deviceMap.get(wb.getDeviceIndex()) != null) {
+                    targetBindList.add(wb);
+                }
+            }
+
+            if (CollectionUtils.isEmpty(targetBindList)) {
+                return new ApiResult(Errors.SUCCESS);
+            }
+
+            SsidConfigTarget target = new SsidConfigTarget();
+            target.setSsidId(wirelessId);
+            Map<Long, SsidConfigTarget.SsidBindParam> belongDeviceMap = new HashMap<>();
+
+            List<Long> deleteIdList = new ArrayList<>();
+            Set<Long> belongDeviceList = new HashSet<>();
+            Set<Long> deviceList = new HashSet<>();
+            for (final WirelessBind wb : targetBindList) {
+                belongDeviceList.add(wb.getBelongDeviceIndex());
+                deviceList.add(wb.getDeviceIndex());
+                Device device = deviceMap.get(wb.getDeviceIndex());
+                SsidConfigTarget.SsidBindParam ssidBindParam = belongDeviceMap.get(device.getBelongDevice());
+
+                Long belongDeviceIndex = wb.getBelongDeviceIndex();
+
+                RedisDevice belongDevice = null;
+
+                belongDevice = belongDeviceCache.get(belongDeviceIndex);
+
+                if (belongDevice == null) {
+                    Device parentDevice = deviceMap.get(belongDeviceIndex);
+
+                    if (parentDevice == null) {
+                        belongDevice = DeviceRedissonApi.getInstance().getRedisDevice(vo.getSiteId(), belongDeviceIndex);
+
+                        if (belongDevice != null) {
+                            belongDeviceCache.put(belongDeviceIndex, belongDevice);
+                        }
+                    } else {
+                        belongDevice = DeviceAdaptor.toRedisDevice(parentDevice);
+                    }
+                }
+
+                if (belongDevice == null) {
+                    return new ApiResult(Errors.INVALID_PARAMS);
+                }
+
+                if (ssidBindParam == null) {
+                    ssidBindParam = new SsidConfigTarget.SsidBindParam();
+                    ssidBindParam.setBelongDeviceIndex(belongDeviceIndex);
+                    ssidBindParam.setBelongDevice(belongDevice);
+
+                    ssidBindParam.setConfigType(ConfigType.unbind);
+
+                    List<SsidConfigTarget.DeviceRadioBindParam> unbindRadioList = new ArrayList<>();
+                    SsidConfigTarget.DeviceRadioBindParam deviceRadioBindParam = new SsidConfigTarget.DeviceRadioBindParam();
+                    deviceRadioBindParam.setDeviceMac(device.getDeviceMac());
+
+                    deviceRadioBindParam.setRadioList(new ArrayList<SsidConfigTarget.RadioVlan>() {
+                        private static final long serialVersionUID = -7799384750627467618L;
+
+                        {
+                            add(new SsidConfigTarget.RadioVlan(wb.getRadioUnit(), wb.getVid(), deviceRadioIdMap.get(wb.getRadioId())));
+                        }
+                    });
+                    unbindRadioList.add(deviceRadioBindParam);
+                    ssidBindParam.setUnbindRadioList(unbindRadioList);
+                    belongDeviceMap.put(device.getBelongDevice(), ssidBindParam);
+                } else {
+                    List<SsidConfigTarget.DeviceRadioBindParam> unbindRadioList = ssidBindParam.getUnbindRadioList();
+                    boolean deviceExist = false;
+                    for (SsidConfigTarget.DeviceRadioBindParam param : unbindRadioList) {
+                        if (device.getDeviceMac().equals(param.getDeviceMac())) {
+                            deviceExist = true;
+                            param.getRadioList().add(new SsidConfigTarget.RadioVlan(wb.getRadioUnit(), wb.getVid(), deviceRadioIdMap.get(wb.getRadioId())));
+                            break;
+                        }
+                    }
+
+                    if (!deviceExist) {
+                        SsidConfigTarget.DeviceRadioBindParam param = new SsidConfigTarget.DeviceRadioBindParam();
+                        param.setDeviceMac(device.getDeviceMac());
+                        ArrayList<SsidConfigTarget.RadioVlan> list = new ArrayList<>();
+                        list.add(new SsidConfigTarget.RadioVlan(wb.getRadioUnit(), wb.getVid(), deviceRadioIdMap.get(wb.getRadioId())));
+                        param.setRadioList(list);
+                        unbindRadioList.add(param);
+                    }
+
+                }
+
+                deleteIdList.add(wb.getId());
+            }
+
+            target.setSsidBindParamList(new ArrayList<>(belongDeviceMap.values()));
+
+            if (!CollectionUtils.isEmpty(deleteIdList)) {
+                if (deleteIdList.size() > 500) {
+                    List<List<Long>> groups = CommonUtil.splitList(deleteIdList, 500);
+                    for (List<Long> dil : groups) {
+                        wirelessBindDao.batchDelete(vo.getSiteId(), dil);
+                    }
+                } else {
+                    wirelessBindDao.batchDelete(vo.getSiteId(), deleteIdList);
+                }
+            }
+
+            Map<Long, CapacityCount> capacityCountMap = new HashMap<>();
+
+            buildBelongDeviceCapacity(vo.getSiteId(), belongDeviceList, capacityCountMap, new HashMap<Long, Map<Long, List<WirelessBindCapacity>>>());
+
+            SsidConfigTarget delTarget;
+            delTarget = new SsidConfigTarget();
+            delTarget.setSsidId(target.getSsidId());
+            ArrayList<SsidConfigTarget.SsidBindParam> list = new ArrayList<>();
+            delTarget.setSsidBindParamList(list);
+            boolean needDel = false;
+
+            Map<Long, SsidConfigTarget.SsidBindParam> delMap = new HashMap<>();
+            List<SsidConfigTarget.SsidBindParam> unbindList = target.getSsidBindParamList();
+            Iterator<SsidConfigTarget.SsidBindParam> iterator = unbindList.iterator();
+            while (iterator.hasNext()) {
+                SsidConfigTarget.SsidBindParam ssidBindParam = iterator.next();
+                CapacityCount cc = capacityCountMap.get(ssidBindParam.getBelongDeviceIndex());
+                if (cc == null || !cc.getSsidSet().contains(wirelessId)) {
+                    needDel = true;
+                    SsidConfigTarget.SsidBindParam param = new SsidConfigTarget.SsidBindParam();
+                    param.setConfigType(ConfigType.delete);
+                    param.setBelongDeviceIndex(ssidBindParam.getBelongDeviceIndex());
+                    param.setBelongDevice(ssidBindParam.getBelongDevice());
+                    delMap.put(ssidBindParam.getBelongDeviceIndex(), param);
+                    iterator.remove();
+                }
+            }
+
+            list.addAll(delMap.values());
+
+            if (needDel) {
+                sendSsidPortalMqMsgWithDelay(vo.getSiteId(), context, ConfigType.delete, delTarget);
+            }
+
+            if (!CollectionUtils.isEmpty(target.getSsidBindParamList())) {
+                sendSsidPortalMqMsgWithDelay(vo.getSiteId(), context, ConfigType.unbind, target);
+            }
+
+            String opLog = "解除无线服务[%s]与[%s]台设备的[%s]条射频的绑定";
+
+            AlarmUtil.sendAlarm(vo.getSiteId(), LogOpType.UPDATE, AlarmUtil.ALARM_CONFIG_MODULE_CONFIG, LogOpResult.success,
+                    opLog, w.getSsidName(), String.valueOf(deviceList.size()), String.valueOf(deleteIdList.size()));
+        }
+
+        return new ApiResult(Errors.SUCCESS);
+
+    }
+
+    @SiteLock
+    public ApiResult unbindWireless(SsidDeviceVO vo, Context context) {
+        ApiResult result = checkWirelessUnbindParam(vo);
+        if (!result.isSuccess()) {
+            return result;
+        }
+
+        result = deleteBindStatusAndBuildConfigMsg(vo);
+        if (result.isSuccess()) {
+            List<SsidConfigTarget> configMsgList = (List<SsidConfigTarget>) result.getResult();
+            for (SsidConfigTarget target : configMsgList) {
+//              检查是否需要发送delete消息
+                SsidConfigTarget delTarget;
+                delTarget = new SsidConfigTarget();
+                delTarget.setSsidId(target.getSsidId());
+                ArrayList<SsidConfigTarget.SsidBindParam> list = new ArrayList<>();
+                delTarget.setSsidBindParamList(list);
+                boolean needDel = false;
+
+                Map<Long, SsidConfigTarget.SsidBindParam> delMap = new HashMap<>();
+                List<SsidConfigTarget.SsidBindParam> unbindList = target.getSsidBindParamList();
+                Iterator<SsidConfigTarget.SsidBindParam> iterator = unbindList.iterator();
+                while (iterator.hasNext()) {
+                    SsidConfigTarget.SsidBindParam ssidBindParam = iterator.next();
+//                    if (!ssidBindParam.isBelongDeviceFatAp() && !wirelessBindDao.existBelongDeviceSsid(vo.getSiteId(), target.getSsidId(), ssidBindParam.getBelongDeviceIndex())) {
+                    if (!wirelessBindDao.existBelongDeviceSsid(vo.getSiteId(), target.getSsidId(), ssidBindParam.getBelongDeviceIndex())) {
+                        needDel = true;
+                        SsidConfigTarget.SsidBindParam param = new SsidConfigTarget.SsidBindParam();
+                        param.setConfigType(ConfigType.delete);
+                        param.setBelongDeviceIndex(ssidBindParam.getBelongDeviceIndex());
+                        param.setBelongDevice(ssidBindParam.getBelongDevice());
+                        delMap.put(ssidBindParam.getBelongDeviceIndex(), param);
+                        iterator.remove();
+                    }
+                }
+                list.addAll(delMap.values());
+
+                if (needDel) {
+                    sendSsidPortalMqMsg(vo.getSiteId(), context, ConfigType.delete, delTarget);
+                }
+
+//                发送unbind消息
+                if (!CollectionUtils.isEmpty(target.getSsidBindParamList())) {
+                    sendSsidPortalMqMsg(vo.getSiteId(), context, ConfigType.unbind, target);
+                }
+            }
+        }
+        result.setResult(null);
+        return result;
+    }
+
+    @Transactional
+    @SiteLock
+    public ApiResult saveBindStatusAndBuildConfigMsg(SsidDeviceVO vo, Map<Long, Wireless> wirelessMap) {
+        List<SsidConfigTarget> targetList = new ArrayList<>();
+        List<WirelessBind> statusList = new ArrayList<>();
+        for (Long wirelessId : vo.getSsidList()) {
+            SsidConfigTarget target = new SsidConfigTarget();
+            target.setSsidId(wirelessId);
+            Wireless wireless = wirelessMap.get(wirelessId);
+            boolean existPortal = wireless.getPortal() != null;
+            target.setPortalId(existPortal ? wireless.getPortal().getPortalId() : null);
+            Map<Long, SsidConfigTarget.SsidBindParam> belongDeviceMap = new HashMap<>();
+
+            for (DeviceRadioVidBindVO deviceRadioVidBindVO : vo.getDeviceRadioVidList()) {
+                RedisDevice device = DeviceRedissonApi.getInstance().getRedisDevice(vo.getSiteId(), deviceRadioVidBindVO.getDeviceIndex());
+                RedisDevice belongDevice;
+                Long belongDeviceIndex = deviceRadioVidBindVO.getDeviceIndex();
+                if (device == null) {
+                    return new ApiResult(Errors.DEVICE_NOT_EXIST_ERROR);
+                }
+                if (isFitAp(device.getDeviceType(), device.getBelongDevice())) {
+                    belongDevice = DeviceRedissonApi.getInstance().getRedisDevice(vo.getSiteId(), device.getBelongDevice());
+                    belongDeviceIndex = device.getBelongDevice();
+                } else {
+                    belongDevice = device;
+                }
+
+                SsidConfigTarget.SsidBindParam ssidBindParam = belongDeviceMap.get(belongDeviceIndex);
+
+                final List<RadioVidVO> radioVidList = deviceRadioVidBindVO.getRadioVidList();
+                for (final RadioVidVO radioVidVO : radioVidList) {
+                    final Long radioId = radioVidVO.getRadioId();
+                    final Radio radio = radioDao.findBySiteIdAndDeviceIndexAndRadioId(vo.getSiteId(), deviceRadioVidBindVO.getDeviceIndex(), radioId);
+                    if (radio == null) {
+                        return new ApiResult(Errors.RADIO_NOT_EXIST_ERROR);
+                    }
+
+                    List<WirelessBind> bindList = wirelessBindDao.findBySiteIdAndSsidAndRadio(vo.getSiteId(), wirelessId, radioId);
+
+                    WirelessBind bindStatus;
+                    if (!CollectionUtils.isEmpty(bindList)) {
+                        bindStatus = bindList.get(0);
+                    } else {
+                        bindStatus = new WirelessBind();
+                        bindStatus.setId(SnowflakeHolder.nextId());
+                        bindStatus.setSiteId(vo.getSiteId());
+                        bindStatus.setBelongDeviceIndex(belongDeviceIndex);
+                        bindStatus.setDeviceIndex(deviceRadioVidBindVO.getDeviceIndex());
+                        bindStatus.setRadioId(radioId);
+                        bindStatus.setRadioUnit(radio.getRadioUnit());
+                        bindStatus.setWirelessId(wirelessId);
+                        bindStatus.setPortalId(wireless.getPortal() == null ? null : wireless.getPortal().getPortalId());
+                        bindStatus.setPortalPageId(wireless.getPortal() == null ? null : wireless.getPortal().getPortalPageId());
+                    }
+                    bindStatus.setVid(radioVidVO.getVid());
+
+                    if (ssidBindParam == null) {
+                        ssidBindParam = new SsidConfigTarget.SsidBindParam();
+                        ssidBindParam.setBelongDeviceIndex(belongDeviceIndex);
+                        ssidBindParam.setBelongDevice(belongDevice);
+                        ssidBindParam.setConfigType(ConfigType.bind);
+
+                        ssidBindParam.setNeedToSendSsid(!wirelessBindDao.existBelongDeviceSsid(vo.getSiteId(), wirelessId, device.getBelongDevice()));
+                        if (existPortal) {
+                            ssidBindParam.setNeedToSendPortal(!wirelessBindDao.existBelongDevicePortal(vo.getSiteId(), wireless.getPortal().getPortalId(), device.getBelongDevice()));
+                        }
+
+                        List<SsidConfigTarget.DeviceRadioBindParam> bindRadioList = new ArrayList<>();
+                        SsidConfigTarget.DeviceRadioBindParam deviceRadioBindParam = new SsidConfigTarget.DeviceRadioBindParam();
+                        deviceRadioBindParam.setDeviceMac(device.getDeviceMac());
+
+                        deviceRadioBindParam.setRadioList(new ArrayList<SsidConfigTarget.RadioVlan>() {
+                            private static final long serialVersionUID = -7799384750627467618L;
+
+                            {
+                                add(new SsidConfigTarget.RadioVlan(radio.getRadioUnit(), radioVidVO.getVid(), radio.getDeviceRadioId()));
+                            }
+                        });
+                        bindRadioList.add(deviceRadioBindParam);
+                        ssidBindParam.setBindRadioList(bindRadioList);
+                        belongDeviceMap.put(belongDeviceIndex, ssidBindParam);
+                    } else {
+                        List<SsidConfigTarget.DeviceRadioBindParam> bindRadioList = ssidBindParam.getBindRadioList();
+                        boolean deviceExist = false;
+                        for (SsidConfigTarget.DeviceRadioBindParam param : bindRadioList) {
+                            if (device.getDeviceMac().equals(param.getDeviceMac())) {
+                                deviceExist = true;
+                                param.getRadioList().add(new SsidConfigTarget.RadioVlan(radio.getRadioUnit(), radioVidVO.getVid(), radio.getDeviceRadioId()));
+                                break;
+                            }
+                        }
+
+                        if (!deviceExist) {
+                            SsidConfigTarget.DeviceRadioBindParam param = new SsidConfigTarget.DeviceRadioBindParam();
+                            param.setDeviceMac(device.getDeviceMac());
+                            param.setRadioList(new ArrayList<SsidConfigTarget.RadioVlan>() {
+                                private static final long serialVersionUID = -6118861344728128139L;
+
+                                {
+                                    add(new SsidConfigTarget.RadioVlan(radio.getRadioUnit(), radioVidVO.getVid(), radio.getDeviceRadioId()));
+                                }
+                            });
+
+                            bindRadioList.add(param);
+                        }
+
+                    }
+
+                    statusList.add(bindStatus);
+                }
+            }
+
+            target.setSsidBindParamList(new ArrayList<>(belongDeviceMap.values()));
+
+            targetList.add(target);
+        }
+        if (!CollectionUtils.isEmpty(statusList)) {
+            wirelessBindDao.batchUpdate(statusList);
+        }
+
+        return new ApiResult(Errors.SUCCESS, targetList);
+    }
+
+    @Transactional
+    @SiteLock
+    public ApiResult deleteBindStatusAndBuildConfigMsg(SsidDeviceVO vo) {
+        List<SsidConfigTarget> targetList = new ArrayList<>();
+        List<Long> deviceIndexs = new ArrayList<>();
+        List<Long> radioIdList = new ArrayList<>();
+        for (DeviceRadioVidBindVO bindVO : vo.getDeviceRadioVidList()) {
+            deviceIndexs.add(bindVO.getDeviceIndex());
+            for (RadioVidVO rvv : bindVO.getRadioVidList()) {
+                radioIdList.add(rvv.getRadioId());
+            }
+        }
+
+        Map<Long, Device> deviceMap = deviceDao.findDeviceMap(vo.getSiteId(), deviceIndexs);
+        final Map<Long, String> deviceRadioIdMap = radioDao.findDeviceRadioIdMap(vo.getSiteId(), radioIdList);
+
+        if (CollectionUtils.isEmpty(deviceMap)) {
+            return new ApiResult(Errors.DEVICE_NOT_EXIST_ERROR);
+        }
+
+        for (Long wirelessId : vo.getSsidList()) {
+            SsidConfigTarget target = new SsidConfigTarget();
+            target.setSsidId(wirelessId);
+            Map<Long, SsidConfigTarget.SsidBindParam> belongDeviceMap = new HashMap<>();
+
+            for (DeviceRadioVidBindVO deviceRadioVidBindVO : vo.getDeviceRadioVidList()) {
+                Device d = deviceMap.get(deviceRadioVidBindVO.getDeviceIndex());
+                if (d == null) {
+                    continue;
+                }
+
+                RedisDevice device = DeviceAdaptor.toRedisDevice(d);
+                RedisDevice belongDevice;
+                Long belongDeviceIndex = deviceRadioVidBindVO.getDeviceIndex();
+                if (device == null) {
+                    return new ApiResult(Errors.DEVICE_NOT_EXIST_ERROR);
+                }
+                if (isFitAp(device.getDeviceType(), device.getBelongDevice())) {
+                    belongDevice = DeviceRedissonApi.getInstance().getRedisDevice(vo.getSiteId(), device.getBelongDevice());
+                    belongDeviceIndex = device.getBelongDevice();
+                } else {
+                    belongDevice = device;
+                }
+
+                SsidConfigTarget.SsidBindParam ssidBindParam = belongDeviceMap.get(device.getBelongDevice());
+
+                List<RadioVidVO> radioVidList = deviceRadioVidBindVO.getRadioVidList();
+                for (RadioVidVO radioVidVO : radioVidList) {
+                    Long radioId = radioVidVO.getRadioId();
+                    final List<WirelessBind> bindList = wirelessBindDao.findBySiteIdAndWirelessAndDeviceIndexAndRadioId(vo.getSiteId(), wirelessId, deviceRadioVidBindVO.getDeviceIndex(), radioId);
+                    if (CollectionUtils.isEmpty(bindList)) {
+                        return new ApiResult(Errors.BIND_STATUS_NOT_EXIST_ERROR);
+                    }
+                    final WirelessBind bindStatus = bindList.get(0);
+
+                    if (ssidBindParam == null) {
+                        ssidBindParam = new SsidConfigTarget.SsidBindParam();
+                        ssidBindParam.setBelongDeviceIndex(belongDeviceIndex);
+                        ssidBindParam.setBelongDevice(belongDevice);
+
+                        ssidBindParam.setConfigType(ConfigType.unbind);
+
+                        List<SsidConfigTarget.DeviceRadioBindParam> unbindRadioList = new ArrayList<>();
+                        SsidConfigTarget.DeviceRadioBindParam deviceRadioBindParam = new SsidConfigTarget.DeviceRadioBindParam();
+                        deviceRadioBindParam.setDeviceMac(device.getDeviceMac());
+
+                        deviceRadioBindParam.setRadioList(new ArrayList<SsidConfigTarget.RadioVlan>() {
+                            private static final long serialVersionUID = -7799384750627467618L;
+
+                            {
+                                add(new SsidConfigTarget.RadioVlan(bindStatus.getRadioUnit(), bindStatus.getVid(), deviceRadioIdMap.get(bindStatus.getRadioId())));
+                            }
+                        });
+                        unbindRadioList.add(deviceRadioBindParam);
+                        ssidBindParam.setUnbindRadioList(unbindRadioList);
+                        belongDeviceMap.put(device.getBelongDevice(), ssidBindParam);
+                    } else {
+                        List<SsidConfigTarget.DeviceRadioBindParam> unbindRadioList = ssidBindParam.getUnbindRadioList();
+                        boolean deviceExist = false;
+                        for (SsidConfigTarget.DeviceRadioBindParam param : unbindRadioList) {
+                            if (device.getDeviceMac().equals(param.getDeviceMac())) {
+                                deviceExist = true;
+                                param.getRadioList().add(new SsidConfigTarget.RadioVlan(bindStatus.getRadioUnit(), bindStatus.getVid(), deviceRadioIdMap.get(bindStatus.getRadioId())));
+                                break;
+                            }
+                        }
+
+                        if (!deviceExist) {
+                            SsidConfigTarget.DeviceRadioBindParam param = new SsidConfigTarget.DeviceRadioBindParam();
+                            param.setDeviceMac(device.getDeviceMac());
+                            ArrayList<SsidConfigTarget.RadioVlan> list = new ArrayList<>();
+                            list.add(new SsidConfigTarget.RadioVlan(bindStatus.getRadioUnit(), bindStatus.getVid(), deviceRadioIdMap.get(bindStatus.getRadioId())));
+                            param.setRadioList(list);
+                            unbindRadioList.add(param);
+                        }
+
+                    }
+
+                    wirelessBindRepository.delete(bindStatus);
+                }
+            }
+
+            target.setSsidBindParamList(new ArrayList<>(belongDeviceMap.values()));
+
+            targetList.add(target);
+        }
+
+        return new ApiResult(Errors.SUCCESS, targetList);
+    }
+
+    private ApiResult checkWirelessBindParamAndSpec(SsidDeviceVO vo) {
+//        暂不处理ssidList中ssid重复的情况
+//            Map<Long, Integer> count = new HashMap<>();
+//        ArrayList<Wireless> wirelesses = new ArrayList<>();
+
+        Map<Long, Wireless> wirelesses = new HashMap<>();
+        List<String> ssidNameList = new ArrayList<>();
+        for (Long wirelessId : vo.getSsidList()) {
+//            Ssid wireless = ssidDao.findBySiteIdAndWirelessId(vo.getSiteId(), wirelessId);
+            Wireless wireless = wirelessDao.findBySiteIdAndWirelessId(vo.getSiteId(), wirelessId);
+            if (wireless == null) {
+                return new ApiResult(Errors.WIRELESS_NOT_EXIST_ERROR);
+            }
+
+            ssidNameList.add(wireless.getSsidName());
+            wirelesses.put(wirelessId, wireless);
+
+            boolean isWirelessWithPortal = wireless.getPortalId() != null && wireless.getPortalId() != 0;
+
+            for (DeviceRadioVidBindVO deviceRadioVidBindVO : vo.getDeviceRadioVidList()) {
+                RedisDevice device = DeviceRedissonApi.getInstance().getRedisDevice(vo.getSiteId(), deviceRadioVidBindVO.getDeviceIndex());
+                if (device == null) {
+                    return new ApiResult(Errors.DEVICE_NOT_EXIST_ERROR);
+                }
+                deviceRadioVidBindVO.setDeviceName(deviceDao.getDeviceName(vo.getSiteId(), deviceRadioVidBindVO.getDeviceIndex()));
+
+//              deviceIndex中已存在该wireless，不需要检查设备规格
+                if (CollectionUtils.isEmpty(wirelessBindDao.findWirelessBindBySiteAndWirelessIdAndDeviceIndex(vo.getSiteId(), deviceRadioVidBindVO.getDeviceIndex(), wirelessId))) {
+
+//                fat ap不允许绑定带portal的ssid
+                    if (isWirelessWithPortal && isFatAp(device.getDeviceType(), device.getBelongDevice())) {
+                        return new ApiResult(Errors.BIND_STATUS_INVALID_ERROR);
+                    }
+
+//                检查belongDevice规格是否超限
+                    Long belongDevice = device.getBelongDevice();
+//                    只针对fit ap or wvr检查belongDevice规格,fat ap只需要检查单射频规格
+                    if ((belongDevice != null && DeviceUtil.isAp(device.getDeviceType())) || (belongDevice == null && !DeviceUtil.isAp(device.getDeviceType()))) {
+//                        wvr不检查belongDevice的ssid规格
+                        if (belongDevice == null) {
+                            belongDevice = deviceRadioVidBindVO.getDeviceIndex();
+                        } else {
+//                    检查ssid、portal、PortalPage
+                            if ((!wirelessBindDao.existBelongDeviceSsid(vo.getSiteId(), wirelessId, belongDevice)) && (wirelessBindDao.countSsidByBelongDeviceExceptWvr(vo.getSiteId(), belongDevice) >= capacityApi.getDeviceSsidMaxBySiteIdAndDeviceIndex(vo.getSiteId(), belongDevice))) {
+                                return new ApiResult(Errors.OUT_OF_DEVICE_SPEC_ERROR);
+                            }
+                        }
+
+                        if (isWirelessWithPortal) {
+                            if (!wirelessBindDao.existBelongDevicePortal(vo.getSiteId(), wireless.getPortalId(), belongDevice) && wirelessBindDao.countPortalByBelongDevice(vo.getSiteId(), belongDevice, true) >= capacityApi.getDevicePortalMaxBySiteIdAndDeviceIndex(vo.getSiteId(), belongDevice)) {
+                                return new ApiResult(Errors.OUT_OF_DEVICE_SPEC_ERROR);
+                            }
+                            if (!wirelessBindDao.existBelongDevicePortalPage(vo.getSiteId(), wireless.getPortal().getPortalPageId(), belongDevice) && wirelessBindDao.countPortalPageByBelongDevice(vo.getSiteId(), belongDevice) >= capacityApi.getDevicePortalPageMaxBySiteIdAndDeviceIndex(vo.getSiteId(), belongDevice)) {
+                                return new ApiResult(Errors.OUT_OF_DEVICE_SPEC_ERROR);
+                            }
+
+                        }
+                    }
+
+                }
+
+//                检查单射频中规格是否超限
+                for (RadioVidVO radioVidVO : deviceRadioVidBindVO.getRadioVidList()) {
+                    Long radioId = radioVidVO.getRadioId();
+
+                    Radio radio = radioDao.findBySiteIdAndDeviceIndexAndRadioId(vo.getSiteId(), deviceRadioVidBindVO.getDeviceIndex(), radioId);
+                    if (radio == null) {
+                        return new ApiResult(Errors.RADIO_NOT_EXIST_ERROR);
+                    }
+
+                    radioVidVO.setRadioUnit(radio.getRadioUnit());
+//                    radio中已存在该Wireless，则跳过检查
+                    if (!CollectionUtils.isEmpty(wirelessBindDao.findWirelessBindBySiteAndWirelessIdAndRadioId(vo.getSiteId(), radioId, wirelessId))) {
+                        continue;
+                    }
+
+
+                    if (wirelessBindDao.countSsidByDeviceRadio(vo.getSiteId(), deviceRadioVidBindVO.getDeviceIndex(), radioId) >= capacityApi.getRadioSsidMaxBySiteIdAndDeviceIndexAndRadioUnit(vo.getSiteId(), deviceRadioVidBindVO.getDeviceIndex(), radio.getRadioUnit())) {
+                        return new ApiResult(Errors.OUT_OF_DEVICE_SPEC_ERROR);
+                    }
+                }
+            }
+        }
+        vo.setSsidNameList(ssidNameList);
+        return new ApiResult(Errors.SUCCESS, wirelesses);
+    }
+
+    private ApiResult checkWirelessUnbindParam(SsidDeviceVO vo) {
+        if (vo == null) {
+            return ApiResult.INVALID_PARAMS;
+        }
+
+        List<String> ssidNameList = new ArrayList<>();
+        for (Long wirelessId : vo.getSsidList()) {
+            for (DeviceRadioVidBindVO deviceRadioVidBindVO : vo.getDeviceRadioVidList()) {
+                for (RadioVidVO radioVidVO : deviceRadioVidBindVO.getRadioVidList()) {
+                    Long radioId = radioVidVO.getRadioId();
+                    List<WirelessBind> list = wirelessBindDao.findBySiteIdAndWirelessAndDeviceIndexAndRadioId(vo.getSiteId(), wirelessId, deviceRadioVidBindVO.getDeviceIndex(), radioId);
+                    if (CollectionUtils.isEmpty(list)) {
+                        return new ApiResult(Errors.BIND_STATUS_NOT_EXIST_ERROR);
+                    }
+                    radioVidVO.setRadioUnit(list.get(0).getRadioUnit());
+                }
+                deviceRadioVidBindVO.setDeviceName(deviceDao.getDeviceName(vo.getSiteId(), deviceRadioVidBindVO.getDeviceIndex()));
+            }
+            ssidNameList.add(ssidDao.findById(wirelessId).get().getSsidName());
+        }
+        vo.setSsidNameList(ssidNameList);
+        return new ApiResult(Errors.SUCCESS);
+    }
+
+    public ApiResult getWireless(GetSiteConfigVO vo) {
+        if (vo == null) {
+            return new ApiResult(Errors.INVALID_PARAMS);
+        }
+
+        Ssid ssid = ssidDao.findBySiteIdAndWirelessId(vo.getSiteId(), vo.getId());
+        if (ssid == null) {
+            return new ApiResult(Errors.WIRELESS_NOT_EXIST_ERROR);
+        }
+        return new ApiResult(Errors.SUCCESS, WirelessAdaptor.toSsidVO(ssid));
+    }
+
+    public ApiResult getWirelessWithBind(GetSiteConfigVO vo) {
+        if (vo == null) {
+            return new ApiResult(Errors.INVALID_PARAMS);
+        }
+
+        SsidBindVO ssidBindVO = wirelessDao.getWirelessWithBindBySiteIdAndWirelessId(vo.getSiteId(), vo.getId());
+        if (ssidBindVO == null) {
+            return new ApiResult(Errors.WIRELESS_NOT_EXIST_ERROR);
+        }
+        return new ApiResult(Errors.SUCCESS, ssidBindVO);
+    }
+
+    private ApiResult sendSsidPortalMqMsg(WirelessVO wirelessVO, PortalVO portalVO, Context context, ConfigType type) {
+        List<Long> portalIds = portalVO == null ? Collections.<Long>emptyList() : Collections.singletonList(portalVO.getPortalId());
+        List<Long> ssids = wirelessVO.getWirelessId() == null ? Collections.<Long>emptyList() : Collections.singletonList(wirelessVO.getWirelessId());
+        SsidConfigTarget target = null;
+//        new SsidConfigTarget(portalIds, ssids);
+        return sendSsidPortalMqMsg(wirelessVO.getSiteId(), context, type, target);
+    }
+
+    private ApiResult sendSsidPortalMqMsg(Long siteId, Context context, ConfigType type, SsidConfigTarget target) {
+//        发送mq
+        SetConfigMsg msg = new SetConfigMsg();
+        msg.setSiteId(siteId);
+        msg.setConfigType(type);
+        msg.setModule(ConfigModule.ssid_portal);
+
+        msg.setConfigTarget(target);
+//        msg.setConfigTargetType(ConfigTargetType.deviceGroup);
+        msg.setConfigContext(new ConfigContext(context.getCloudUsername(), context.getToken()));
+
+        MsgUtil.initSetConfigMsgSequence(siteId, msg);
+        return mqSendClient.sendSetConfigMsg(msg);
+    }
+
+    private void sendSsidPortalMqMsgWithDelay(final Long siteId, final Context context,
+                                              final ConfigType configType, final SsidConfigTarget target) {
+        if(!CollectionUtils.isEmpty(target.getSsidBindParamList())) {
+            final List<SsidConfigTarget.SsidBindParam> delayBindParam = new ArrayList<>();
+            List<SsidConfigTarget.SsidBindParam> noDelayBindParam = new ArrayList<>();
+            for(SsidConfigTarget.SsidBindParam sbp : target.getSsidBindParamList()) {
+                if(sendWirelessDelay(sbp.getBelongDeviceIndex())) {
+                    delayBindParam.add(sbp);
+                }else {
+                    noDelayBindParam.add(sbp);
+                }
+            }
+
+            if(!CollectionUtils.isEmpty(noDelayBindParam)) {
+                target.setSsidBindParamList(noDelayBindParam);
+                setDeviceWirelessWaitingFlag(noDelayBindParam);
+                sendSsidPortalMqMsg(siteId, context, configType, target);
+            }
+
+            if(!CollectionUtils.isEmpty(delayBindParam)) {
+                logger.debug("wireless need to send delay : " + delayBindParam);
+
+                target.setSsidBindParamList(delayBindParam);
+
+                ExecutorService delayWirelessExecutors = getDelayExecutor(siteId);
+                delayWirelessExecutors.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        setDeviceWirelessWaitingFlag(delayBindParam);
+                        try {
+                            Thread.sleep(WIRELESS_DELAY_TIME * 1000);
+                        }catch (InterruptedException ie) {
+
+                        }
+
+
+                        sendSsidPortalMqMsg(siteId, context, configType, target);
+                    }
+                });
+            }
+        }
+    }
+
+    public ApiResult deleteBySiteId(SiteVO vo) {
+        portalService.deleteBySiteId(vo);
+        wirelessDao.deleteBySiteId(vo.getSiteId());
+        return new ApiResult(Errors.SUCCESS);
+    }
+
+    private boolean isFitAp(String deviceType, Long belongDevice) {
+        return belongDevice != null && DeviceUtil.isAp(deviceType);
+    }
+
+    private boolean isFatAp(String deviceType, Long belongDevice) {
+        return belongDevice == null && DeviceUtil.isAp(deviceType);
+    }
+
+    public ApiResult getWirelessList(WirelessIdVO wirelessIdVO) {
+        List<Ssid> wirelessList = ssidDao.findBySiteIdAndWirelessIdIn(wirelessIdVO.getProjectId(), wirelessIdVO.getWirelessIdList());
+        List<SsidVO> ssidVOS = new ArrayList<>();
+        if (!CollectionUtils.isEmpty(wirelessList)) {
+            for (Ssid ssid : wirelessList) {
+                ssidVOS.add(WirelessAdaptor.toSsidVO(ssid));
+            }
+        }
+
+        SsidListVO ssidListVO = new SsidListVO();
+        ssidListVO.setSsidList(ssidVOS);
+        return new ApiResult(Errors.SUCCESS, ssidListVO);
+    }
+
+    public ApiResult getWirelessList(Grid grid) {
+        if (grid == null) {
+            return new ApiResult(Errors.INVALID_PARAMS);
+        }
+
+        grid = ssidDao.findAll(grid);
+
+        List<SsidVO> ssidVOS = new ArrayList<>();
+        List<Ssid> ssids = (List<Ssid>) grid.getList();
+        if (!CollectionUtils.isEmpty(ssids)) {
+            for (Ssid ssid : ssids) {
+                ssidVOS.add(WirelessAdaptor.toSsidVO(ssid));
+            }
+        }
+
+        grid.setList(ssidVOS);
+
+        return new ApiResult(Errors.SUCCESS, grid);
+    }
+
+    public ApiResult getWirelessWithBindList(Grid grid) {
+        if (grid == null) {
+            return new ApiResult(Errors.INVALID_PARAMS);
+        }
+
+
+        List<QueryCondition> andFilters = new ArrayList<>();
+        List<QueryCondition> orFilters = new ArrayList<>();
+
+        andFilters.add(new QueryCondition("cwm_config_wireless.wirelessId", null, QueryCondition.QueryType.asc));
+
+        Map<String, Object> filterAnd = grid.getFilterAnd();
+        if(!CollectionUtils.isEmpty(filterAnd)) {
+            for (String filterKey : filterAnd.keySet()) {
+                switch (filterKey) {
+                    case Constant.FILTER_SITE_ID:
+                        andFilters.add(new QueryCondition("cwm_config_wireless." + filterKey, filterAnd.get(filterKey), QueryCondition.QueryType.equal));
+                        break;
+                    case Constant.FILTER_PROJECT_ID:
+                        andFilters.add(new QueryCondition("cwm_config_wireless." + Constant.FILTER_SITE_ID, filterAnd.get(filterKey), QueryCondition.QueryType.equal));
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+
+        Map<String, Object> filterOr = grid.getFilterOr();
+        if(!CollectionUtils.isEmpty(filterOr)) {
+            for(String filterKey : filterOr.keySet()) {
+                if(filterKey.equals(Constant.FILTER_CONFIG_WIRELESS_SSID)) {
+                    orFilters.add(new QueryCondition("cwm_config_wireless." + Constant.FILTER_CONFIG_WIRELESS_SSID,
+                            filterOr.get(filterKey), QueryCondition.QueryType.like));
+                }
+            }
+
+        }
+
+        String sql = "SELECT cwm_config_wireless.siteId AS siteId, cwm_config_wireless.wirelessId AS wirelessId, cwm_config_wireless.wirelessInfo AS wirelessInfo, cwm_config_portal.portalId AS portalId, cwm_config_portal.portalPageId AS portalPageId, cwm_config_portal.portalInfo AS portalInfo, COUNT(DISTINCT cwm_config_wireless_bind.deviceIndex) AS bindDeviceCount, COUNT(DISTINCT cwm_config_wireless_bind.radioId) AS bindRadioCount, GROUP_CONCAT(DISTINCT CONCAT_WS(\"\\:\",cwm_config_wireless_bind.deviceIndex,cwm_config_wireless_bind.radioId,cwm_config_wireless_bind.vid) SEPARATOR \";\") AS bindDeviceRadioList FROM cwm_config_wireless LEFT JOIN cwm_config_portal ON cwm_config_wireless.portalId = cwm_config_portal.portalId LEFT JOIN cwm_config_wireless_bind ON cwm_config_wireless_bind.wirelessId = cwm_config_wireless.wirelessId";
+
+        String countSql = "SELECT COUNT(DISTINCT cwm_config_wireless.wirelessId) FROM cwm_config_wireless LEFT JOIN cwm_config_portal ON cwm_config_wireless.portalId = cwm_config_portal.portalId LEFT JOIN cwm_config_wireless_bind ON cwm_config_wireless_bind.wirelessId = cwm_config_wireless.wirelessId";
+
+        String groupBySql = "GROUP BY cwm_config_wireless.wirelessId";
+
+//        ORDER BY cwm_config_wireless_bind.deviceIndex
+
+        grid = wirelessDao.pageQuery(sql, countSql, groupBySql,  new SqlResultHandle() {
+            @Override
+            public List handleSqlResult(List result) {
+                List<SsidPortalVO> vos = new ArrayList<>();
+                for (Object[] row : (List<Object[]>) result) {
+                    SsidPortalVO vo = WirelessAdaptor.toSsidPortalVO((String) row[2], (String) row[5]);
+                    vo.setBindDeviceCount(BigIntegerToInteger(row[6]));
+                    vo.setBindRadioCount(BigIntegerToInteger(row[7]));
+                    vo.setBindDeviceRadioList((String) row[8]);
+                    vos.add(vo);
+                }
+                return vos;
+
+            }
+        }, grid, andFilters, orFilters);
+
+        return new ApiResult(Errors.SUCCESS, grid);
+    }
+
+    public ApiResult getWirelessWithBindCountList(Grid grid) {
+        if (grid == null) {
+            return new ApiResult(Errors.INVALID_PARAMS);
+        }
+
+        List<QueryCondition> andFilters = new ArrayList<>();
+        List<QueryCondition> orFilters = new ArrayList<>();
+
+        andFilters.add(new QueryCondition("cwm_config_wireless.wirelessId", null, QueryCondition.QueryType.asc));
+
+        Map<String, Object> filterAnd = grid.getFilterAnd();
+        if(!CollectionUtils.isEmpty(filterAnd)) {
+            for (String filterKey : filterAnd.keySet()) {
+                switch (filterKey) {
+                    case Constant.FILTER_SITE_ID:
+                        andFilters.add(new QueryCondition("cwm_config_wireless." + filterKey, filterAnd.get(filterKey), QueryCondition.QueryType.equal));
+                        break;
+                    case Constant.FILTER_PROJECT_ID:
+                        andFilters.add(new QueryCondition("cwm_config_wireless." + Constant.FILTER_SITE_ID, filterAnd.get(filterKey), QueryCondition.QueryType.equal));
+                        break;
+                    default:
+                        break;
+                }
+            }
+        }
+
+        Map<String, Object> filterOr = grid.getFilterOr();
+        if(!CollectionUtils.isEmpty(filterOr)) {
+            for(String filterKey : filterOr.keySet()) {
+                if(filterKey.equals(Constant.FILTER_CONFIG_WIRELESS_SSID)) {
+                    orFilters.add(new QueryCondition("cwm_config_wireless." + Constant.FILTER_CONFIG_WIRELESS_SSID,
+                            filterOr.get(filterKey), QueryCondition.QueryType.like));
+                }
+            }
+
+        }
+
+
+        String sql = "SELECT cwm_config_wireless.siteId AS siteId, cwm_config_wireless.wirelessId AS wirelessId, cwm_config_wireless.wirelessInfo AS wirelessInfo, cwm_config_portal.portalId AS portalId, cwm_config_portal.portalPageId AS portalPageId, cwm_config_portal.portalInfo AS portalInfo, COUNT(DISTINCT cwm_config_wireless_bind.deviceIndex) AS bindDeviceCount, COUNT(DISTINCT cwm_config_wireless_bind.radioId) AS bindRadioCount FROM cwm_config_wireless LEFT JOIN cwm_config_portal ON cwm_config_wireless.portalId = cwm_config_portal.portalId LEFT JOIN cwm_config_wireless_bind ON cwm_config_wireless_bind.wirelessId = cwm_config_wireless.wirelessId";
+
+        String countSql = "SELECT COUNT(DISTINCT cwm_config_wireless.wirelessId) FROM cwm_config_wireless LEFT JOIN cwm_config_portal ON cwm_config_wireless.portalId = cwm_config_portal.portalId LEFT JOIN cwm_config_wireless_bind ON cwm_config_wireless_bind.wirelessId = cwm_config_wireless.wirelessId";
+
+        String groupBySql = "GROUP BY cwm_config_wireless.wirelessId";
+
+//        ORDER BY cwm_config_wireless_bind.deviceIndex
+
+        grid = wirelessDao.pageQuery(sql, countSql, groupBySql, new SqlResultHandle() {
+            @Override
+            public List handleSqlResult(List result) {
+                List<SsidPortalVO> vos = new ArrayList<>();
+                for (Object[] row : (List<Object[]>) result) {
+                    SsidPortalVO vo = WirelessAdaptor.toSsidPortalVO((String) row[2], (String) row[5]);
+                    vo.setBindDeviceCount(BigIntegerToInteger(row[6]));
+                    vo.setBindRadioCount(BigIntegerToInteger(row[7]));
+                    vos.add(vo);
+                }
+                return vos;
+
+            }
+        }, grid, andFilters, orFilters);
+
+        return new ApiResult(Errors.SUCCESS, grid);
+    }
+
+    //    2018-02-01暂不使用
+//    @Deprecated
+//    public ApiResult copyWireless(CopyWirelessVO vo, Context context) {
+//        if (vo == null) {
+//            return ApiResult.INVALID_PARAMS;
+//        }
+//
+//        Wireless wireless = wirelessDao.findBySiteIdAndWirelessId(vo.getSiteId(), vo.getWirelessId());
+//        if (wireless == null) {
+//            return new ApiResult(Errors.WIRELESS_NOT_EXIST_ERROR);
+//        }
+//
+//        ApiResult result = new ApiResult(0);
+//        for (Long deviceGroupId : vo.getTargetGroupIds()) {
+//            WirelessVO wirelessVO = WirelessAdaptor.toWirelessVO(wireless);
+//            result = addWireless(wirelessVO, context);
+//            if (!result.isSuccess()) {
+//                result.setResult(wireless.getSsidName());
+//                return result;
+//            }
+//        }
+//        result.setResult(wireless.getSsidName());
+//        return result;
+//    }
+
+    //    2018-02-01暂不使用
+//    @Deprecated
+//    public ApiResult copyGroupWireless(CopyGroupConfigVO vo, Context context) {
+//        List<Wireless> sourcWirelesses = wirelessDao.findBySiteId(vo.getSiteId());
+//        if (CollectionUtils.isEmpty(sourcWirelesses)) {
+//            return ApiResult.SUCCESS;
+//        }
+//        List<Wireless> wirelessList = new ArrayList<>();
+//        List<Portal> portalList = new ArrayList<>();
+//        RLock lock = getLock(null, vo.getSiteId(), vo.getTargetGroupId());
+//        try {
+//            if (lock.tryLock(20, 20, TimeUnit.SECONDS)) {
+//                for (Wireless source : sourcWirelesses) {
+//                    WirelessVO wirelessVO = WirelessAdaptor.toWirelessVO(source);
+//
+//                    PortalVO portalVO = wirelessVO.getPortal();
+//                    long portalId = 0L;
+//                    if (portalVO != null) {
+//                        portalId = SnowflakeHolder.nextId();
+//                        portalVO.setPortalId(portalId);
+//                        Portal portal = PortalAdaptor.toPortal(portalVO, null);
+//                        portalList.add(portal);
+//                    }
+//
+//                    wirelessVO.setWirelessId(SnowflakeHolder.nextId());
+//                    wirelessList.add(WirelessAdaptor.toWireless(wirelessVO, portalId, null));
+//                }
+//
+//                portalService.portalDao.batchUpdate(portalList);
+//                wirelessDao.batchUpdate(wirelessList);
+//            } else {
+//                logger.warn("lock acquire timeout.");
+//                return ApiResult.SYSTEM_INTERNAL_ERROR;
+//            }
+//        } catch (Exception e) {
+//            logger.warn("exception occur when locking." + e);
+//            return ApiResult.SYSTEM_INTERNAL_ERROR;
+//        } finally {
+//            lock.unlock();
+//        }
+//
+//        return ApiResult.SUCCESS;
+//    }
+//
+//    @Deprecated
+//    private RLock getLock(String name, Long... params) {
+//        if (name == null) {
+//            name = Constant.WIRELESS_LOCK;
+//        }
+//        String lock = name;
+//        StringBuilder lockId = new StringBuilder();
+//        for (Long s : params) {
+//            lockId.append(":").append(s);
+//        }
+//
+//        if (lockId.length() > 1)
+//            lock += ":" + lockId;
+//        return redissonClient.getFairLock(lock);
+//    }
+//
+//    @Deprecated
+//    public ApiResult deleteWireless(WirelessVO wirelessVO) {
+//        if (wirelessVO == null) {
+//            return new ApiResult(Errors.INVALID_PARAMS);
+//        }
+//
+//        Wireless wireless = wirelessDao.findBySiteIdAndWirelessId(wirelessVO.getSiteId(), wirelessVO.getWirelessId());
+//        if (wireless == null) {
+//            return new ApiResult(Errors.WIRELESS_NOT_EXIST_ERROR);
+//        }
+////        从数据库获取绑定该ssid的所有设备；级联删除ssid，portal；数据自动级联删除绑定关系
+////        todo 发送删除消息
+////        todo 调整规格限制
+//
+////        会级联删除
+//        wirelessDao.delete(wireless);
+//
+//        return new ApiResult(Errors.SUCCESS);
+//    }
+//
+//    @Deprecated
+//    public ApiResult deleteWirelesses(SiteDeleteVO vo, Context context) {
+//        if (vo == null || CollectionUtils.isEmpty(vo.getIdList())) {
+//            return new ApiResult(Errors.INVALID_PARAMS);
+//        }
+//
+//        List<Wireless> deleteWires = new ArrayList<>();
+//        StringBuilder delSsids = new StringBuilder();
+//        for (Long id : vo.getIdList()) {
+//            Wireless delWire = wirelessDao.findBySiteIdAndWirelessId(vo.getSiteId(), id);
+//            if (delWire == null) {
+//                return new ApiResult(Errors.WIRELESS_NOT_EXIST_ERROR);
+//            } else {
+//                deleteWires.add(delWire);
+//                delSsids.append(delWire.getSsidName()).append(" ");
+//            }
+//        }
+////        级联删除
+//        wirelessDao.deleteAll(deleteWires);
+//
+//        List<Long> portals = new ArrayList<>();
+//        List<Long> ssids = new ArrayList<>();
+//        for (Wireless wireless : deleteWires) {
+//            ssids.add(wireless.getWirelessId());
+//            if (wireless.getPortal() != null) {
+//                portals.add(wireless.getPortal().getPortalId());
+//            }
+//        }
+//        WirelessVO wirelessVO = new WirelessVO();
+//        wirelessVO.setSiteId(vo.getSiteId());
+////        new SsidConfigTarget(portals, ssids)
+//        ApiResult result = sendSsidPortalMqMsg(wirelessVO.getSiteId(), context, ConfigType.delete, null);
+//        result.setResult(delSsids.toString().trim());
+//        return result;
+//    }
+//
+//    @Deprecated
+//    public ApiResult editWireless(WirelessVO vo, Context context) {
+//        if (vo == null) {
+//            return new ApiResult(Errors.INVALID_PARAMS, "");
+//        }
+//
+//        ApiResult result = editSsidAndPortal(vo, context);
+//
+//        if (result.isSuccess()) {
+//            PortalVO resObj = (PortalVO) result.getResult();
+//            result = sendSsidPortalMqMsg(vo, (PortalVO) result.getResult(), context, ConfigType.edit);
+//
+//            if (result.isSuccess()) {
+//                vo.setPortal(resObj);
+//                result.setResult(vo);
+//            }
+//        }
+//
+//        return result;
+//    }
+//
+//    @Deprecated
+//    public ApiResult getWirelessGroupList(Grid grid) {
+//        Grid groupGrid = (Grid) groupService.getDeviceGroupList(grid).getResult();
+//        List<WirelessGroupVO> list = new ArrayList<>();
+//        for (DeviceGroupVO vo : (List<DeviceGroupVO>) groupGrid.getData()) {
+//            WirelessGroupVO wirelessGroupVO = new WirelessGroupVO();
+//            wirelessGroupVO.setSiteId(vo.getSiteId());
+//            wirelessGroupVO.setDeviceGroupId(vo.getGroupId());
+//            wirelessGroupVO.setDeviceGroupName(vo.getGroupName());
+//            wirelessGroupVO.setDeviceNumber(vo.getDeviceNumber());
+//            wirelessGroupVO.setDeviceNumberOnline(null);
+//
+//            ArrayList<QueryCondition> queryConditions = new ArrayList<>();
+//            queryConditions.add(new QueryCondition("siteId", vo.getSiteId(), QueryCondition.QueryType.equal));
+//            queryConditions.add(new QueryCondition("deviceGroupId", vo.getGroupId(), QueryCondition.QueryType.equal));
+//            wirelessGroupVO.setSsidCount((int) wirelessDao.countByFilters(queryConditions, null));
+//            list.add(wirelessGroupVO);
+//        }
+//        groupGrid.setData(list);
+//        return new ApiResult(Errors.SUCCESS, groupGrid);
+//    }
+//
+//    @Deprecated
+//    public ApiResult addWireless(WirelessVO wirelessVO, Context context) {
+//        if (wirelessVO == null) {
+//            return new ApiResult(Errors.INVALID_PARAMS);
+//        }
+//
+//        return addWirelessAndPortal(wirelessVO, context);
+//    }
+//
+//    @Transactional
+//    @Deprecated
+//    public ApiResult editSsidAndPortal(WirelessVO vo, Context context) {
+//        ApiResult result = new ApiResult(0);
+//        PortalVO portalVO;
+//        String ssidName = vo.getSsidName();
+//        RLock lock = getLock(null, vo.getSiteId());
+//        try {
+//            if (lock.tryLock(20, 20, TimeUnit.SECONDS)) {
+//                final Wireless wireless = wirelessDao.findBySiteIdAndWirelessId(vo.getSiteId(), vo.getWirelessId());
+//                if (wireless == null) {
+//                    return new ApiResult(Errors.WIRELESS_NOT_EXIST_ERROR);
+//                }
+//
+////                todo 判断ssid和portal是否改变
+////                未改变的话，直接return
+////                若改变了：todo 根据SSIDName取得ssidList，去除self；判断encode是否相同，若同，return冲突，不同，判断vid是否相同，若同，通过，若不同；判断bindDeviceList是否有相同设备，有return冲突，否，通过。
+//
+////                todo 校验通过后，数据库存储，消息发送
+//
+//                ssidName = wireless.getSsidName();
+//
+//                List<Wireless> wirelessExtList = wirelessDao.findBySiteIdAndSsid(vo.getSiteId(), vo.getSsidName());
+//                if (wirelessExtList != null && wirelessExtList.size() > 0) {
+//                    if (wirelessExtList.size() > 2) {
+//                        return new ApiResult(Errors.WIRELESS_SSID_CONFLICT_ERROR, ssidName);
+//                    } else {
+//                        for (Wireless wire : wirelessExtList) {
+//                            if (!wire.getWirelessId().equals(wireless.getWirelessId()) && WirelessAdaptor.toWirelessVO(wire).getEncode().equals(vo.getEncode())) {
+//                                return new ApiResult(Errors.WIRELESS_SSID_CONFLICT_ERROR, ssidName);
+//                            }
+//                        }
+//                    }
+//                }
+//
+//                portalVO = vo.getPortal();
+//                Long portalId = 0L;
+//                Long wirelessId = vo.getWirelessId();
+//                if (portalVO == null) {
+//                    if (wireless.getPortal() != null) {
+////                        1-->0:删除portal，更新ssid
+//                        SiteDeleteVO deleteVO = new SiteDeleteVO();
+//                        deleteVO.setSiteId(vo.getSiteId());
+//                        deleteVO.setIdList(new ArrayList<Long>() {{
+//                            add(wireless.getPortal().getPortalId());
+//                        }});
+//                        portalService.deletePortal(deleteVO, null);
+////                        0-->0:只更新ssid
+//                        vo.setWirelessId(null);
+//                        result = sendSsidPortalMqMsg(vo, PortalAdaptor.toPortalVO(wireless.getPortal()), context, ConfigType.delete);
+//                    }
+//                } else {
+////                    portalId = portalVO.getPortalId();
+////                    更新ssid和portal
+//                    portalVO.setSiteId(vo.getSiteId());
+//                    result = portalService.editPortal(portalVO);
+//                    portalId = (Long) result.getResult();
+//                }
+//                vo.setWirelessId(wirelessId);
+//                if (result.isSuccess()) {
+//                    result.setResult(portalVO);
+//                    wirelessDao.update(WirelessAdaptor.toWireless(vo, portalId, wireless));
+//                    return result;
+//                } else {
+//                    result.setResult(ssidName);
+//                    return result;
+//                }
+//            } else {
+//                logger.warn("lock acquire timeout.");
+//                return new ApiResult(Errors.SYSTEM_INTERNAL_ERROR, ssidName);
+//            }
+//        } catch (Exception e) {
+//            logger.warn("exception occur when locking." + e);
+//            return new ApiResult(Errors.SYSTEM_INTERNAL_ERROR, ssidName);
+//        } finally {
+//            lock.unlock();
+//        }
+//    }
+//
+//    @Transactional
+//    @Deprecated
+//    public ApiResult addWirelessAndPortal(WirelessVO wirelessVO, Context context) {
+//        ApiResult result = new ApiResult(0);
+//        PortalVO portalVO;
+//        RLock lock = getLock(null, wirelessVO.getSiteId());
+//        Long wirelessId;
+//        try {
+//            if (lock.tryLock(20, 20, TimeUnit.SECONDS)) {
+////                if (wirelessDao.countBySiteIdAndDeviceGroupId(wirelessVO.getSiteId(), wirelessVO.getDeviceGroupId()) >= Constant.CWM_CONFIG_WIRELESS_COUNT_GROUP_LIMIT) {
+////                    return new ApiResult(Errors.WIRELESS_SSID_OVER_LIMIT_ERROR);
+////                }
+//                List<Wireless> wirelessList = wirelessDao.findBySiteIdAndSsid(wirelessVO.getSiteId(), wirelessVO.getSsidName());
+//                if (wirelessList != null && (wirelessList.size() > 1 || (wirelessList.size() == 1 && WirelessAdaptor.toWirelessVO(wirelessList.get(0)).getEncode().equals(wirelessVO.getEncode())))) {
+//                    return new ApiResult(Errors.WIRELESS_SSID_CONFLICT_ERROR);
+//                }
+//
+//                portalVO = wirelessVO.getPortal();
+//                if (portalVO == null) {
+//                    portalVO = new PortalVO();
+//                } else {
+//                    portalVO.setSiteId(wirelessVO.getSiteId());
+//                    result = portalService.addPortal(portalVO, context);
+//                }
+//
+//                if (result.isSuccess()) {
+//                    Long portalId = result.getResult() != null ? (Long) result.getResult() : 0L;
+//                    portalVO.setPortalId(portalId);
+//                    wirelessVO.setWirelessId(SnowflakeHolder.nextId());
+//                    wirelessId = (Long) wirelessDao.add(WirelessAdaptor.toWireless(wirelessVO, portalId, null));
+//                } else {
+//                    return result;
+//                }
+//            } else {
+//                logger.warn("lock acquire timeout.");
+//                return ApiResult.SYSTEM_INTERNAL_ERROR;
+//            }
+//        } catch (Exception e) {
+//            logger.warn("exception occur when locking." + e);
+//            return ApiResult.SYSTEM_INTERNAL_ERROR;
+//        } finally {
+//            lock.unlock();
+//        }
+//        if (wirelessId != null) {
+//            result.setResult(WirelessAdaptor.toWirelessVO(wirelessDao.get(wirelessId)));
+//        }
+//        return result;
+//    }
+
+    public String buildDeviceRadioNames(SsidDeviceVO vo) {
+        StringBuilder names = new StringBuilder();
+        for (DeviceRadioVidBindVO deviceRadioVidBindVO : vo.getDeviceRadioVidList()) {
+            names.append(deviceRadioVidBindVO.getDeviceName()).append("的");
+            StringBuilder radio = new StringBuilder();
+            for (RadioVidVO radioVidVO : deviceRadioVidBindVO.getRadioVidList()) {
+                radio.append(radioVidVO.getRadioUnit()).append("、");
+            }
+            if (radio.length() > 0) {
+                radio.deleteCharAt(radio.length() - 1);
+            }
+            names.append(radio).append(",");
+        }
+        if (names.length() > 0) {
+            names.deleteCharAt(names.length() - 1);
+        }
+        return names.toString();
+    }
+
+    @Transactional
+    @SiteLock
+    public ApiResult addSsidV2(SsidWithAutoBindVO vo, Context context) {
+        if (vo == null) {
+            return new ApiResult(Errors.INVALID_PARAMS);
+        }
+
+        Portal portal;
+        if (vo.getPortalId() != null && vo.getPortalId() != 0) {
+            portal = portalRepository.findBySiteIdAndPortalId(vo.getProjectId(), vo.getPortalId());
+            if (portal == null) {
+                return new ApiResult(Errors.PORTAL_NOT_EXIST_ERROR);
+            }
+        } else {
+            vo.setPortalId(0L);
+        }
+
+        List<Ssid> ssidList = ssidDao.findBySiteIdAndSsidName(vo.getProjectId(), vo.getSsidName());
+        if (ssidList != null && (ssidList.size() > 1 || (ssidList.size() == 1 && WirelessAdaptor.toSsidVO(ssidList.get(0)).getEncode().equals(vo.getEncode())))) {
+            return new ApiResult(Errors.WIRELESS_SSID_CONFLICT_ERROR);
+        }
+
+        vo.setWirelessId(SnowflakeHolder.nextId());
+
+        Ssid ssid = WirelessAdaptor.toSsid(vo, null);
+        ssidDao.save(ssid);
+
+        ApiResult result = new ApiResult(Errors.SUCCESS);
+        result.setResult(WirelessAdaptor.toSsidVO(ssidDao.findById(ssid.getWirelessId()).get()));
+        return result;
+    }
+
+    @SiteLock
+    public ApiResult updateSsidV2(SsidWithAutoBindVO vo, Context context) {
+        if (vo == null) {
+            return new ApiResult(Errors.INVALID_PARAMS);
+        }
+        Ssid wireless = ssidDao.findBySiteIdAndWirelessId(vo.getProjectId(), vo.getWirelessId());
+        if (wireless == null) {
+            return new ApiResult(Errors.WIRELESS_NOT_EXIST_ERROR);
+        }
+
+
+//      检查名称冲突
+        String ssidName = wireless.getSsidName();
+
+        List<Wireless> wirelessExtList = wirelessDao.findBySiteIdAndSsid(vo.getProjectId(), vo.getSsidName());
+        if (!CollectionUtils.isEmpty(wirelessExtList)) {
+            if (wirelessExtList.size() > 2) {
+                return new ApiResult(Errors.WIRELESS_SSID_CONFLICT_ERROR, ssidName);
+            } else {
+                for (Wireless wire : wirelessExtList) {
+                    if (!wire.getWirelessId().equals(wireless.getWirelessId()) && WirelessAdaptor.toSsidVO(wire).getEncode().equals(vo.getEncode())) {
+                        return new ApiResult(Errors.WIRELESS_SSID_CONFLICT_ERROR, ssidName);
+                    }
+                }
+            }
+        }
+
+    }
