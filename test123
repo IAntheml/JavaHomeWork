@@ -45,3 +45,29 @@
         }
         return ApiResult.SUCCESS;
     }
+
+    public Map<Long, String> getBelongDeviceNameMap(final Long siteId, final Collection<Long> belongDeviceIds) {
+        assert !CollectionUtils.isEmpty(belongDeviceIds);
+
+        Session session = getSession();
+
+        String hql = "select d.id, d.deviceName from com.tplink.ignite.module.nms.resource.domain.bean.Device d where d.id in (:idList) and d.siteId = (:siteId)";
+
+        Query query = session.createQuery(hql);
+        query.setParameterList("idList", belongDeviceIds);
+        query.setParameter("siteId", siteId);
+        Map<Long, String> nameMap = new HashMap<>();
+        List<Object[]> deviceInfo = query.list();
+        for (Object[] deviceEntry : deviceInfo) {
+            if (deviceEntry.length == 2) {
+                Long belongDevice = (Long) deviceEntry[0];
+                String name = (String) deviceEntry[1];
+
+                nameMap.put(belongDevice, name);
+
+            }
+        }
+        return nameMap;
+
+
+    }
