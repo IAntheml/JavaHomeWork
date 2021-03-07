@@ -15,25 +15,61 @@ import java.util.Map;
  */
 public interface NmsDeviceConfigBindRelationRepository extends BaseRepository<NmsDeviceConfigBindRelation, Long> {
 
+
     NmsDeviceConfigBindRelation findByDeviceIndexAndConfigModule(Long deviceIndex, String configModule);
 
     NmsDeviceConfigBindRelation findByDeviceIndexAndConfigModuleAndProjectId(Long deviceIndex, String configModule, Long projectId);
-
+    /**
+     * 
+     * @param deviceIndex 设备索引
+     * @param configModule 配置模块
+	 * @param deviceEntryId 设备端条目id
+     * @return 绑定关系
+     */
     NmsDeviceConfigBindRelation findByDeviceIndexAndConfigModuleAndDeviceEntryId(Long deviceIndex, String configModule, String deviceEntryId);
 
+	/**
+     * 
+     * @param deviceIndex 设备索引
+     * @param configModule 配置模块
+	 * @param deviceEntryId 设备端条目id
+     * @return 绑定关系列表
+     */
     List<NmsDeviceConfigBindRelation> findByProjectIdAndDeviceIndexAndAndConfigModule(Long projectId, Long deviceIndex, String configModule);
 
+	/**
+     * @param deviceIndex 设备索引
+     * @param configModule 配置模块
+	 * @param moduleEntryId 云端条目id
+     * @return 绑定关系列表
+     */
     List<NmsDeviceConfigBindRelation> findByProjectIdAndConfigModuleAndModuleEntryId(Long projectId, String configModule, Long moduleEntryId);
-
+	
+	/**
+     * @param deviceIndex 设备索引
+     * @param configModule 配置模块
+	 * @param moduleEntryId 云端条目id
+     * @return 删除的绑定关系数量
+     */
     Long deleteByProjectIdAndConfigModuleAndModuleEntryId(Long projectId, String configModule, Long moduleEntryId);
 
+	/**
+     * @param deviceIndex 设备索引
+	 * @param moduleEntryIds 云端条目id列表
+     * @return 云端条目列表
+     */
     @Query(value = "select n.deviceEntryId from NmsDeviceConfigBindRelation as n " +
-            "where n.deviceIndex= :deviceIndex AND n.moduleEntryId IN :freeStrategyIds")
-    List<Long> findDeviceEntryIdByDeviceIndexAndModuleEntryIds(@Param("deviceIndex") Long deviceIndex, @Param("freeStrategyIds") List<Long> freeStrategyIds);
+            "where n.deviceIndex= :deviceIndex AND n.moduleEntryId IN :moduleEntryIds")
+    List<Long> findDeviceEntryIdByDeviceIndexAndModuleEntryIds(@Param("deviceIndex") Long deviceIndex, @ParamList("freeStrategyIds") List<Long> moduleEntryIds);
 
+	/**
+     * @param deviceIndex 设备索引
+	 * @param moduleEntryId 云端条目id列表
+     * @return 云端条目id对应的设备端条目
+     */
     @Query(value = "select n.deviceEntryId from NmsDeviceConfigBindRelation as n " +
-            "where n.deviceIndex= :deviceIndex AND n.moduleEntryId = :freeStrategyId")
-    Long findDeviceEntryIdByDeviceIndexAndModuleEntryId(@Param("deviceIndex") Long deviceIndex, @Param("freeStrategyId") Long freeStrategyId);
+            "where n.deviceIndex= :deviceIndex AND n.moduleEntryId = :moduleEntryId")
+    Long findDeviceEntryIdByDeviceIndexAndModuleEntryId(@Param("deviceIndex") Long deviceIndex, @Param("moduleEntryId") Long moduleEntryId);
 
     /**
      * 根据云端配置条目ids查找所有绑定关系
@@ -41,18 +77,14 @@ public interface NmsDeviceConfigBindRelationRepository extends BaseRepository<Nm
      * @param moduleEntryIds 云端条目ids
      * @return 绑定关系列表
      */
-    List<NmsDeviceConfigBindRelation> findAllByConfigModuleAndModuleEntryId(String configModule,List<Long> moduleEntryIds);
+    List<NmsDeviceConfigBindRelation> findAllByConfigModuleAndModuleEntryIdIn(String configModule,List<Long> moduleEntryIds);
 
-    List<NmsDeviceConfigBindRelation> findByModuleEntryId(Long moduleEntryId);
-
-    /**
-     * 通过项目id、模块、配置条目id获取模块条目id对应的设备数量。
-     * @param projectId 项目id
-     * @param configModule 模块
-     * @param moduleEntryIds 配置条目id
-     * @return
+	/**
+     * 根据云端配置条目ids查找所有绑定关系
+     * @param moduleEntryId 云端条目id
+     * @return 绑定关系列表
      */
-    Map<Long,Integer> findDeviceAmountByProjectIdAndConfigModuleAndModuleEntryIds(Long projectId, String configModule, List<Long> moduleEntryIds);
+    List<NmsDeviceConfigBindRelation> findByModuleEntryId(Long moduleEntryId);
 
     /**
      *  查询认证参数的设备信息
@@ -63,7 +95,7 @@ public interface NmsDeviceConfigBindRelationRepository extends BaseRepository<Nm
      */
     @Query(value = "select n.deviceIndex from NmsDeviceConfigBindRelation as n where n.projectId = :projectId " +
             "AND n.moduleEntryId IN :moduleEntryIds AND n.configModule = :configModule")
-    List<Long> findPortalGlobalDeviceIndexByProjectIdAndModuleEntryId(Long projectId, String configModule, List<Long> moduleEntryIds);
+    List<Long> findPortalGlobalDeviceIndexByProjectIdAndModuleEntryId(@Param("projectId") Long projectId, @Param("configModule") String configModule, @ParamList("moduleEntryIds") List<Long> moduleEntryIds);
 
     /**
      * 查询配置条目绑定的设备index列表
@@ -74,7 +106,7 @@ public interface NmsDeviceConfigBindRelationRepository extends BaseRepository<Nm
      */
     @Query(value = "select n.deviceIndex from NmsDeviceConfigBindRelation as n where n.projectId = :projectId " +
             "AND n.moduleEntryId = :moduleEntryId AND n.configModule = :configModule")
-    List<Long> findDeviceIndexesByProjectIdAndConfigModuleAndModuleEntryId(Long projectId, String configModule, Long moduleEntryId);
+    List<Long> findDeviceIndexesByProjectIdAndConfigModuleAndModuleEntryId(@Param("projectId") Long projectId, @Param("configModule") String configModule,@Param("moduleEntryId") Long moduleEntryId);
 
     /**
      *
@@ -86,14 +118,34 @@ public interface NmsDeviceConfigBindRelationRepository extends BaseRepository<Nm
      */
     Integer deleteByProjectIdAndConfigModuleAndModuleEntryIdAndDeviceIndexIn(Long projectId,String configModule, Long moduleEntryId,List<Long> deviceIndexes);
 
+	/**
+     * 
+     * @param projectId 项目id
+     * @param moduleEntryIds 配置条目id
+     * @return 绑定关系列表
+     */
+    List<NmsDeviceConfigBindRelation> findByProjectIdAndModuleEntryIdIn(Long projectId , List<Long> moduleEntryIds);
+	
     /**
      * 根据条目ids拿到<条目id,设备索引列表>
      * @param newVersionIds 条目列表
      * @return <条目id,设备索引列表>
      */
     Map<Long,List<Long>> findEntryIdWithDeviceIndexesByEntryIds(List<Long> newVersionIds);
+	
+	/**
+     * 通过项目id、模块、配置条目id获取模块条目id对应的设备数量。
+     * @param projectId 项目id
+     * @param configModule 模块
+     * @param moduleEntryIds 配置条目id
+     * @return 设备数量
+     */
+    Map<Long,Integer> findDeviceAmountByProjectIdAndConfigModuleAndModuleEntryIds(Long projectId, String configModule, List<Long> moduleEntryIds);
 
-    List<NmsDeviceConfigBindRelation> findByProjectIdAndModuleEntryIdIn(Long projectId , List<Long> moduleEntryIds);
-
+    /**
+     * 根据条目ids拿到<设备index,条目id>
+     * @param newVersionIds 条目列表
+     * @return <设备index,条目id>
+     */
     Map<Long, List<Long>> findDeviceWithEntryIdMapByEntryIdIn(Long projectId, String toString, List<Long> portalGlobalIdList);
 }
