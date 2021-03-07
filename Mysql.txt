@@ -1,213 +1,4 @@
-public class DeviceDao extends BaseDao<Device> {
-    private SqlResultHandle deviceResultHandle = DeviceResultHandle.getInstance();
-    private String selectDeviceSql = DeviceResultHandle.getInstance().getSelectDeviceSql();
-    @PersistenceContext
-    EntityManager entityManager;
-    @Autowired
-    DeviceRepository deviceRepository;
-    @Autowired
-    CpeDeviceRepository cpeDeviceRepository;
-    @Autowired
-    DeviceConfigDao deviceConfigDao;
-
-    public DeviceDao() {
-    }
-
-    public void add(Device device) {
-        this.deviceRepository.save(device);
-    }
-
-    public Session getSession() {
-        return (Session)this.entityManager.unwrap(Session.class);
-    }
-
-    public long countByDeviceType(String type) {
-        return this.countByFilters((List)null, Arrays.asList(new QueryCondition("deviceType", type, QueryType.like)));
-    }
-
-    public List<Long> findSiteIdList() {
-        Session session = this.getSession();
-        String hql = "select distinct d.siteId from com.tplink.ignite.module.nms.resource.domain.bean.Device d";
-        Query query = session.createQuery(hql);
-        List<Long> ids = query.list();
-        return ids;
-    }
-
-    public Device findBySiteIdAndMac(final Long siteId, final String deviceMac) {
-        String sql = this.selectDeviceSql + "where d.siteId = ? and d.deviceMac = ?";
-        List<Device> devices = this.findBySql(this.entityManager, sql, this.deviceResultHandle, new Object[]{siteId, deviceMac});
-        return CollectionUtils.isEmpty(devices) ? null : (Device)devices.get(0);
-    }
-
-    public Long findParentDeviceIndexBySiteIdAndMac(final Long siteId, final String mac) {
-        Session session = this.getSession();
-        String hql = "select d.id from com.tplink.ignite.module.nms.resource.domain.bean.Device d where d.siteId = :siteId and d.deviceMac = :deviceMac and d.belongDevice is null";
-        Query query = session.createQuery(hql);
-        query.setParameter("siteId", siteId);
-        query.setParameter("deviceMac", mac);
-        List<Long> ids = query.list();
-        return CollectionUtils.isEmpty(ids) ? null : (Long)ids.get(0);
-    }
-
-    public Device findBySiteIdAndMacAndBelongMac(final Long siteId, final String deviceMac, final String belongDeviceMac) {
-        Long belongDeviceIndex = null;
-        if (!StringUtils.isEmpty(belongDeviceMac)) {
-            belongDeviceIndex = this.findParentDeviceIndexBySiteIdAndMac(siteId, belongDeviceMac);
-            if (belongDeviceIndex == null) {
-                return null;
-            }
-        }
-
-        String sql = this.selectDeviceSql;
-        sql = sql + "where d.siteId = ? and d.deviceMac = ? and ";
-        if (StringUtils.isEmpty(belongDeviceMac)) {
-            sql = sql + "d.belongDevice is null";
-        } else {
-            sql = sql + "d.belongDevice = ?";
-        }
-
-        List<Object> params = new ArrayList();
-        params.add(siteId);
-        params.add(deviceMac);
-        if (!StringUtils.isEmpty(belongDeviceMac)) {
-            params.add(belongDeviceIndex);
-        }
-
-        List<Device> devices = this.findBySql(this.entityManager, sql, this.deviceResultHandle, params.toArray());
-        return CollectionUtils.isEmpty(devices) ? null : (Device)devices.get(0);
-    }
-
-    public Long findDeviceIndexBySiteIdAndDeviceId(final Long siteId, final String deviceId) {
-        Session session = this.getSession();
-        String hql = "select d.id from com.tplink.ignite.module.nms.resource.domain.bean.Device d where d.siteId = :siteId and d.deviceId = :deviceId";
-        Query query = session.createQuery(hql);
-        query.setParameter("siteId", siteId);
-        query.setParameter("deviceId", deviceId);
-        List<Long> indexList = query.list();
-        return CollectionUtils.isEmpty(indexList) ? null : (Long)indexList.get(0);
-    }
-
-    public List<Long> findDeviceIndexBySiteIdAndBelongDevice(final Long siteId, final Long belongDeviceIndex) {
-        String hql = "select distinct d.id from com.tplink.ignite.module.nms.resource.domain.bean.Device d where d.belongDevice = :belongDeviceIndex and d.siteId = :siteId";
-        return this.getSession().createQuery(hql).setParameter("belongDeviceIndex", belongDeviceIndex).setParameter("siteId", siteId).list();
-    }
-
-    public List<Long> findDeviceGroupBySiteIdAndBelongDevice(final Long siteId, final Long belongDevice) {
-        Session session = this.getSession();
-        String hql = "select distinct d.group from com.tplink.ignite.module.nms.resource.domain.bean.Device d where d.belongDevice = :belongDevice and d.siteId = :siteId";
-        Query query = session.createQuery(hql);
-        query.setParameter("belongDevice", belongDevice);
-        query.setParameter("siteId", siteId);
-        List<Long> groupIds = query.list();
-        return groupIds;
-    }
-
-    public List<Device> findBySiteIdAndGroupIdAndBelongDevice(Long siteId, Long groupId, Long belongDevice) {
-        String sql = this.selectDeviceSql + "where d.siteId = ? and d.deviceGroup = ? and d.belongDevice = ?";
-        return this.findBySql(this.entityManager, sql, this.deviceResultHandle, new Object[]{siteId, groupId, belongDevice});
-    }
-
-    public List<Device> findBySiteId(Long siteId) {
-        String sql = this.selectDeviceSql + "where d.siteId = ?";
-        return this.findBySql(this.entityManager, sql, this.deviceResultHandle, new Object[]{siteId});
-    }
-
-    public List<Device> findBySiteIdAndDeviceMac(Long siteId, String deviceMac) {
-        String sql = this.selectDeviceSql + "where d.siteId = ? and deviceMac = ?";
-        return this.findBySql(this.entityManager, sql, this.deviceResultHandle, new Object[]{siteId, deviceMac});
-    }
-
-    public List<Device> findBySiteIdAndDeviceMacIn(Long siteId, List<String> deviceMacs) {
-        String hql = this.selectDeviceSql + "where d.siteId = (:siteId) and d.deviceMac in (:deviceMacs)";
-        Session session = this.getSession();
-        List<Device> allDevice = new ArrayList();
-        List<List<String>> macGroups = DeviceUtil.split(deviceMacs, 500);
-        if (!CollectionUtils.isEmpty(macGroups)) {
-            Iterator var7 = macGroups.iterator();
-
-            while(var7.hasNext()) {
-                List<String> macGroup = (List)var7.next();
-                Query query = session.createSQLQuery(hql);
-                query.setParameterList("deviceMacs", macGroup);
-                query.setParameter("siteId", siteId);
-                List devices = query.list();
-                allDevice.addAll(this.deviceResultHandle.handleSqlResult(devices));
-            }
-        }
-
-        return allDevice;
-    }
-
-    public List<Device> findAllBySiteIdAndStatus(Long siteId, Integer status) {
-        String sql = this.selectDeviceSql + "where d.siteId = ? and d.status = ?";
-        return this.findBySql(this.entityManager, sql, this.deviceResultHandle, new Object[]{siteId, status});
-    }
-
-    public List<Device> findAllBySiteIdAndStatusIn(Long siteId, List<Integer> statusList) {
-        return this.deviceRepository.findAllBySiteIdAndStatusIn(siteId, statusList);
-    }
-
-    public List<Device> findAllBySiteIdAndDeviceMacIn(Long projectId, List<String> macList) {
-        return this.deviceRepository.findAllBySiteIdAndDeviceMacIn(projectId, macList);
-    }
-
-    public List<Device> findAllByDeviceMacIn(List<String> macList) {
-        return this.deviceRepository.findAllByDeviceMacIn(macList);
-    }
-
-    public List<String> findDeviceMacByDeviceStatusAndDeviceMacIn(Integer deviceStatus, List<String> deviceMacs) {
-        Session session = this.getSession();
-        String hql = "select distinct d.deviceMac from com.tplink.ignite.module.nms.resource.domain.bean.Device d where d.status = (:status) and d.deviceMac in (:deviceMacs)";
-        Query query = session.createQuery(hql);
-        query.setParameter("status", deviceStatus);
-        query.setParameterList("deviceMacs", deviceMacs);
-        List<String> deviceMacList = query.list();
-        return deviceMacList;
-    }
-
-    public List<String> findDeviceMacByDeviceMacIn(List<String> deviceMacs) {
-        Session session = this.getSession();
-        String hql = "select distinct d.deviceMac from com.tplink.ignite.module.nms.resource.domain.bean.Device d where d.deviceMac in (:deviceMacs)";
-        Query query = session.createQuery(hql);
-        query.setParameterList("deviceMacs", deviceMacs);
-        List<String> deviceMacList = query.list();
-        return deviceMacList;
-    }
-
-    public List<Device> findBySiteIdAndGroupId(Long siteId, Long groupId) {
-        String sql = this.selectDeviceSql + "where d.siteId = ? and d.deviceGroup = ?";
-        return this.findBySql(this.entityManager, sql, this.deviceResultHandle, new Object[]{siteId, groupId});
-    }
-
-    public Device findBySiteIdAndDeviceIndex(Long siteId, Long deviceIndex) {
-        String sql = this.selectDeviceSql + "where d.siteId = ? and d.id = ?";
-        List<Device> devices = this.findBySql(this.entityManager, sql, this.deviceResultHandle, new Object[]{siteId, deviceIndex});
-        return CollectionUtils.isEmpty(devices) ? null : (Device)devices.get(0);
-    }
-
-    public List<Device> findBySiteIdAndDeviceIndex(final Long siteId, final List<Long> deviceIndex) {
-        String hql = this.selectDeviceSql + "where d.id in (:idList) and d.siteId = (:siteId)";
-        Session session = this.getSession();
-        List<Device> allDevice = new ArrayList();
-        List<List<Long>> idGroups = DeviceUtil.splitLongList(deviceIndex, 500);
-        if (!CollectionUtils.isEmpty(idGroups)) {
-            Iterator var7 = idGroups.iterator();
-
-            while(var7.hasNext()) {
-                List<Long> idGroup = (List)var7.next();
-                Query query = session.createSQLQuery(hql);
-                query.setParameterList("idList", idGroup);
-                query.setParameter("siteId", siteId);
-                List devices = query.list();
-                allDevice.addAll(this.deviceResultHandle.handleSqlResult(devices));
-            }
-        }
-
-        return allDevice;
-    }
-    
-    
-    package com.tplink.ignite.module.nms.wireless.dao;
+package com.tplink.ignite.module.nms.wireless.dao;
 
 import com.tplink.ignite.jeelib.dao.BaseRepository;
 import com.tplink.ignite.module.nms.wireless.domain.bean.bean.NmsDeviceConfigBindRelation;
@@ -224,25 +15,61 @@ import java.util.Map;
  */
 public interface NmsDeviceConfigBindRelationRepository extends BaseRepository<NmsDeviceConfigBindRelation, Long> {
 
+
     NmsDeviceConfigBindRelation findByDeviceIndexAndConfigModule(Long deviceIndex, String configModule);
 
     NmsDeviceConfigBindRelation findByDeviceIndexAndConfigModuleAndProjectId(Long deviceIndex, String configModule, Long projectId);
-
+    /**
+     * 
+     * @param deviceIndex 设备索引
+     * @param configModule 配置模块
+	 * @param deviceEntryId 设备端条目id
+     * @return 绑定关系
+     */
     NmsDeviceConfigBindRelation findByDeviceIndexAndConfigModuleAndDeviceEntryId(Long deviceIndex, String configModule, String deviceEntryId);
 
+	/**
+     * 
+     * @param deviceIndex 设备索引
+     * @param configModule 配置模块
+	 * @param deviceEntryId 设备端条目id
+     * @return 绑定关系列表
+     */
     List<NmsDeviceConfigBindRelation> findByProjectIdAndDeviceIndexAndAndConfigModule(Long projectId, Long deviceIndex, String configModule);
 
+	/**
+     * @param deviceIndex 设备索引
+     * @param configModule 配置模块
+	 * @param moduleEntryId 云端条目id
+     * @return 绑定关系列表
+     */
     List<NmsDeviceConfigBindRelation> findByProjectIdAndConfigModuleAndModuleEntryId(Long projectId, String configModule, Long moduleEntryId);
-
+	
+	/**
+     * @param deviceIndex 设备索引
+     * @param configModule 配置模块
+	 * @param moduleEntryId 云端条目id
+     * @return 删除的绑定关系数量
+     */
     Long deleteByProjectIdAndConfigModuleAndModuleEntryId(Long projectId, String configModule, Long moduleEntryId);
 
+	/**
+     * @param deviceIndex 设备索引
+	 * @param moduleEntryIds 云端条目id列表
+     * @return 云端条目列表
+     */
     @Query(value = "select n.deviceEntryId from NmsDeviceConfigBindRelation as n " +
-            "where n.deviceIndex= :deviceIndex AND n.moduleEntryId IN :freeStrategyIds")
-    List<Long> findDeviceEntryIdByDeviceIndexAndModuleEntryIds(@Param("deviceIndex") Long deviceIndex, @Param("freeStrategyIds") List<Long> freeStrategyIds);
+            "where n.deviceIndex= :deviceIndex AND n.moduleEntryId IN :moduleEntryIds")
+    List<Long> findDeviceEntryIdByDeviceIndexAndModuleEntryIds(@Param("deviceIndex") Long deviceIndex, @ParamList("freeStrategyIds") List<Long> moduleEntryIds);
 
+	/**
+     * @param deviceIndex 设备索引
+	 * @param moduleEntryId 云端条目id列表
+     * @return 云端条目id对应的设备端条目
+     */
     @Query(value = "select n.deviceEntryId from NmsDeviceConfigBindRelation as n " +
-            "where n.deviceIndex= :deviceIndex AND n.moduleEntryId = :freeStrategyId")
-    Long findDeviceEntryIdByDeviceIndexAndModuleEntryId(@Param("deviceIndex") Long deviceIndex, @Param("freeStrategyId") Long freeStrategyId);
+            "where n.deviceIndex= :deviceIndex AND n.moduleEntryId = :moduleEntryId")
+    Long findDeviceEntryIdByDeviceIndexAndModuleEntryId(@Param("deviceIndex") Long deviceIndex, @Param("moduleEntryId") Long moduleEntryId);
 
     /**
      * 根据云端配置条目ids查找所有绑定关系
@@ -250,18 +77,14 @@ public interface NmsDeviceConfigBindRelationRepository extends BaseRepository<Nm
      * @param moduleEntryIds 云端条目ids
      * @return 绑定关系列表
      */
-    List<NmsDeviceConfigBindRelation> findAllByConfigModuleAndModuleEntryId(String configModule,List<Long> moduleEntryIds);
+    List<NmsDeviceConfigBindRelation> findAllByConfigModuleAndModuleEntryIdIn(String configModule,List<Long> moduleEntryIds);
 
-    List<NmsDeviceConfigBindRelation> findByModuleEntryId(Long moduleEntryId);
-
-    /**
-     * 通过项目id、模块、配置条目id获取模块条目id对应的设备数量。
-     * @param projectId 项目id
-     * @param configModule 模块
-     * @param moduleEntryIds 配置条目id
-     * @return
+	/**
+     * 根据云端配置条目ids查找所有绑定关系
+     * @param moduleEntryId 云端条目id
+     * @return 绑定关系列表
      */
-    Map<Long,Integer> findDeviceAmountByProjectIdAndConfigModuleAndModuleEntryIds(Long projectId, String configModule, List<Long> moduleEntryIds);
+    List<NmsDeviceConfigBindRelation> findByModuleEntryId(Long moduleEntryId);
 
     /**
      *  查询认证参数的设备信息
@@ -272,7 +95,7 @@ public interface NmsDeviceConfigBindRelationRepository extends BaseRepository<Nm
      */
     @Query(value = "select n.deviceIndex from NmsDeviceConfigBindRelation as n where n.projectId = :projectId " +
             "AND n.moduleEntryId IN :moduleEntryIds AND n.configModule = :configModule")
-    List<Long> findPortalGlobalDeviceIndexByProjectIdAndModuleEntryId(Long projectId, String configModule, List<Long> moduleEntryIds);
+    List<Long> findPortalGlobalDeviceIndexByProjectIdAndModuleEntryId(@Param("projectId") Long projectId, @Param("configModule") String configModule, @ParamList("moduleEntryIds") List<Long> moduleEntryIds);
 
     /**
      * 查询配置条目绑定的设备index列表
@@ -283,7 +106,7 @@ public interface NmsDeviceConfigBindRelationRepository extends BaseRepository<Nm
      */
     @Query(value = "select n.deviceIndex from NmsDeviceConfigBindRelation as n where n.projectId = :projectId " +
             "AND n.moduleEntryId = :moduleEntryId AND n.configModule = :configModule")
-    List<Long> findDeviceIndexesByProjectIdAndConfigModuleAndModuleEntryId(Long projectId, String configModule, Long moduleEntryId);
+    List<Long> findDeviceIndexesByProjectIdAndConfigModuleAndModuleEntryId(@Param("projectId") Long projectId, @Param("configModule") String configModule,@Param("moduleEntryId") Long moduleEntryId);
 
     /**
      *
@@ -295,13 +118,34 @@ public interface NmsDeviceConfigBindRelationRepository extends BaseRepository<Nm
      */
     Integer deleteByProjectIdAndConfigModuleAndModuleEntryIdAndDeviceIndexIn(Long projectId,String configModule, Long moduleEntryId,List<Long> deviceIndexes);
 
+	/**
+     * 
+     * @param projectId 项目id
+     * @param moduleEntryIds 配置条目id
+     * @return 绑定关系列表
+     */
+    List<NmsDeviceConfigBindRelation> findByProjectIdAndModuleEntryIdIn(Long projectId , List<Long> moduleEntryIds);
+	
     /**
      * 根据条目ids拿到<条目id,设备索引列表>
      * @param newVersionIds 条目列表
      * @return <条目id,设备索引列表>
      */
     Map<Long,List<Long>> findEntryIdWithDeviceIndexesByEntryIds(List<Long> newVersionIds);
+	
+	/**
+     * 通过项目id、模块、配置条目id获取模块条目id对应的设备数量。
+     * @param projectId 项目id
+     * @param configModule 模块
+     * @param moduleEntryIds 配置条目id
+     * @return 设备数量
+     */
+    Map<Long,Integer> findDeviceAmountByProjectIdAndConfigModuleAndModuleEntryIds(Long projectId, String configModule, List<Long> moduleEntryIds);
 
-    List<NmsDeviceConfigBindRelation> findByProjectIdAndModuleEntryIdIn(Long projectId , List<Long> moduleEntryIds);
+    /**
+     * 根据条目ids拿到<设备index,条目id>
+     * @param newVersionIds 条目列表
+     * @return <设备index,条目id>
+     */
+    Map<Long, List<Long>> findDeviceWithEntryIdMapByEntryIdIn(Long projectId, String toString, List<Long> portalGlobalIdList);
 }
-
