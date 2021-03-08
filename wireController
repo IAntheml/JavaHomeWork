@@ -1,0 +1,219 @@
+package com.tplink.ignite.module.nms.wireless.controller;
+
+import com.tplink.ignite.common.util.StringUtils;
+import com.tplink.ignite.jeelib.authority.ApiPermission;
+import com.tplink.ignite.jeelib.basecloud.TokenUtil;
+import com.tplink.ignite.jeelib.common.Errors;
+import com.tplink.ignite.jeelib.domain.ApiResult;
+import com.tplink.ignite.jeelib.domain.Grid;
+import com.tplink.ignite.module.nms.wireless.domain.bean.bean.Ssid;
+import com.tplink.ignite.module.nms.wireless.domain.vo.Context;
+import com.tplink.ignite.module.nms.wireless.domain.vo.CopySsidVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.GetSiteConfigVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.MultiQuickAddSsidVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.SiteDeleteVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.SiteSwitchVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.SsidAndBindRelationVo;
+import com.tplink.ignite.module.nms.wireless.domain.vo.SsidDeviceVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.SsidVO;
+import com.tplink.ignite.module.nms.wireless.domain.vo.WirelessIdVO;
+import com.tplink.ignite.module.nms.wireless.service.WirelessService;
+import com.tplink.ignite.module.nms.wireless.util.AlarmUtil;
+import com.tplink.ignite.nms.common.alarmlog.LogOpResult;
+import com.tplink.ignite.nms.common.alarmlog.LogOpType;
+import com.vdurmont.emoji.EmojiManager;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Controller;
+import org.springframework.validation.BindingResult;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.ResponseBody;
+
+import javax.validation.Valid;
+
+/**
+ * Copyright (C) 2017 TP-LINK Technologies Co., Ltd. All rights reserved
+ * Author: dongxinwei
+ * Date: 2017-09-05
+ * Description:
+ */
+@Controller
+@RequestMapping(value = "tums/wireless/v1")
+public class WirelessController {
+    @Autowired
+    private WirelessService service;
+
+    @RequestMapping(value = "getWirelessList")
+    @ResponseBody
+    @ApiPermission(ApiPermission.USER | ApiPermission.SITE_API)
+    public ApiResult getWirelessList(@RequestBody @Valid Grid grid, BindingResult bindingResult) {
+        return service.getWirelessList(grid);
+    }
+
+    @RequestMapping(value = "getWirelessListById")
+    @ResponseBody
+    @ApiPermission(ApiPermission.USER | ApiPermission.SITE_API)
+    public ApiResult getWirelessList(@RequestBody @Valid WirelessIdVO wirelessIdVO, BindingResult bindingResult) {
+        return service.getWirelessList(wirelessIdVO);
+    }
+
+    @RequestMapping(value = "getWirelessWithBindList")
+    @ResponseBody
+    @ApiPermission(ApiPermission.USER | ApiPermission.SITE_API)
+    public ApiResult getWirelessWithBindList(@RequestBody @Valid Grid grid, BindingResult bindingResult) {
+        return service.getWirelessWithBindList(grid);
+    }
+
+    @RequestMapping(value = "getWirelessWithBindCountList")
+    @ResponseBody
+    @ApiPermission(ApiPermission.USER | ApiPermission.SITE_API)
+    public ApiResult getWirelessWithBindCountList(@RequestBody @Valid Grid grid, BindingResult bindingResult) {
+        return service.getWirelessWithBindCountList(grid);
+    }
+
+    @RequestMapping(value = "getWireless")
+    @ResponseBody
+    @ApiPermission(ApiPermission.USER | ApiPermission.SITE_API)
+    public ApiResult getWireless(@RequestBody @Valid GetSiteConfigVO vo, BindingResult bindingResult) {
+        return service.getWireless(vo);
+    }
+
+    @RequestMapping(value = "getWirelessWithBind")
+    @ResponseBody
+    @ApiPermission(ApiPermission.USER | ApiPermission.SITE_API)
+    public ApiResult getWirelessWithBind(@RequestBody @Valid GetSiteConfigVO vo, BindingResult bindingResult) {
+        return service.getWirelessWithBind(vo);
+    }
+
+    @RequestMapping(value = "addWireless")
+    @ResponseBody
+    @ApiPermission(ApiPermission.ADMIN | ApiPermission.SITE_API)
+    public ApiResult addWireless(@RequestBody @Valid SsidVO vo, BindingResult bindingResult) {
+        if(EmojiManager.containsEmoji(vo.getSsidName())){
+            return new ApiResult(Errors.INVALID_PARAMS);
+        }
+        Context context = new Context(TokenUtil.getCloudUsername(), TokenUtil.getToken(), vo.getSiteId());
+        SsidAndBindRelationVo srv = new SsidAndBindRelationVo();
+        srv.setSsid(vo);
+        ApiResult result = service.checkSsidAndBindRelation(srv, context);
+
+        if(!result.isSuccess()) {
+            return result;
+        }
+
+        result = service.addSsid(vo, context);
+        if (result.getResult() != null) {
+            AlarmUtil.sendAlarm(vo.getSiteId(), LogOpType.CREATE,
+                    AlarmUtil.ALARM_CONFIG_MODULE_CONFIG, result.isSuccess() ? LogOpResult.success : LogOpResult.fail,
+                    AlarmUtil.ALARM_WIRELESS_ADD, vo.getSsidName());
+        }
+        return result;
+    }
+
+    @RequestMapping(value = "bindSsidAndDeviceForQuickAdd")
+    @ResponseBody
+    @ApiPermission(ApiPermission.ADMIN | ApiPermission.SITE_API)
+    public ApiResult bindSsidAndDeviceForQuickAdd(@RequestBody @Valid MultiQuickAddSsidVO vo, BindingResult bindingResult) {
+        return service.bindSsidAndDeviceForQuickAdd(vo);
+    }
+
+    @RequestMapping(value = "copyWireless")
+    @ResponseBody
+    @ApiPermission(ApiPermission.ADMIN | ApiPermission.SITE_API)
+    public ApiResult copyWireless(@RequestBody @Valid CopySsidVO vo, BindingResult bindingResult) {
+        ApiResult result = service.copySsid(vo, new Context(TokenUtil.getCloudUsername(), TokenUtil.getToken(), vo.getSiteId()));
+
+        String newSsidName = vo.getSsidName();
+        String oldSsidName = "";
+        Ssid ssid = service.findBySiteIdAndWirelessId(vo);
+        if(null != ssid && !StringUtils.isEmpty(ssid.getSsidName())){
+            oldSsidName = ssid.getSsidName();
+        }
+        AlarmUtil.sendAlarm(vo.getSiteId(), LogOpType.CREATE,
+                AlarmUtil.ALARM_CONFIG_MODULE_CONFIG, result.isSuccess() ? LogOpResult.success : LogOpResult.fail,
+                AlarmUtil.ALARM_WIRELESS_COPY, oldSsidName, newSsidName);
+        return result;
+    }
+
+    @RequestMapping(value = "editWireless")
+    @ResponseBody
+    @ApiPermission(ApiPermission.ADMIN | ApiPermission.SITE_API)
+    public ApiResult editWireless(@RequestBody @Valid SsidVO vo, BindingResult bindingResult) {
+        Context context = new Context(TokenUtil.getCloudUsername(), TokenUtil.getToken(), vo.getSiteId());
+        SsidAndBindRelationVo srv = new SsidAndBindRelationVo();
+        srv.setSsid(vo);
+        ApiResult result = service.checkSsidAndBindRelation(srv, context);
+
+        if(!result.isSuccess()) {
+            return result;
+        }
+
+        result = service.updateSsid(vo, context);
+
+        if (result.getResult() != null) {
+            String ssidName = vo.getSsidName();
+            if (!result.isSuccess()) {
+                ssidName = (String) result.getResult();
+                result.setResult(null);
+            }
+            AlarmUtil.sendAlarm(vo.getSiteId(), LogOpType.UPDATE,
+                    AlarmUtil.ALARM_CONFIG_MODULE_CONFIG, result.isSuccess() ? LogOpResult.success : LogOpResult.fail,
+                    AlarmUtil.ALARM_WIRELESS_UPDATE, ssidName);
+        }
+        return result;
+    }
+
+
+    @RequestMapping(value = "switchWirelessStatus")
+    @ResponseBody
+    @ApiPermission(ApiPermission.ADMIN | ApiPermission.SITE_API)
+    public ApiResult switchWirelessStatus(@RequestBody @Valid SiteSwitchVO vo, BindingResult bindingResult) {
+        ApiResult result = service.switchWirelessStatus(vo, new Context(TokenUtil.getCloudUsername(), TokenUtil.getToken(), vo.getSiteId()));
+        if (result.getResult() != null) {
+            AlarmUtil.sendAlarm(vo.getSiteId(), LogOpType.UPDATE,
+                    AlarmUtil.ALARM_CONFIG_MODULE_CONFIG, result.isSuccess() ? LogOpResult.success : LogOpResult.fail,
+                    AlarmUtil.ALARM_WIRELESS_UPDATE, String.valueOf(result.getResult()));
+        }
+        result.setResult(null);
+        return result;
+    }
+
+    @RequestMapping(value = "deleteWireless")
+    @ResponseBody
+    @ApiPermission(ApiPermission.ADMIN | ApiPermission.SITE_API)
+    public ApiResult deleteWireless(@RequestBody @Valid SiteDeleteVO vo, BindingResult bindingResult) {
+        ApiResult result = service.deleteSsids(vo, new Context(TokenUtil.getCloudUsername(), TokenUtil.getToken(), vo.getSiteId()));
+        if (result.getResult() != null) {
+            AlarmUtil.sendAlarm(vo.getSiteId(), LogOpType.DELETE,
+                    AlarmUtil.ALARM_CONFIG_MODULE_CONFIG, result.isSuccess() ? LogOpResult.success : LogOpResult.fail,
+                    AlarmUtil.ALARM_WIRELESS_DELETE, String.valueOf(result.getResult()));
+            result.setResult(null);
+        }
+        return result;
+    }
+
+    @RequestMapping(value = "bindWireless")
+    @ResponseBody
+    @ApiPermission(ApiPermission.ADMIN | ApiPermission.SITE_API)
+    public ApiResult bindWireless(@RequestBody @Valid SsidDeviceVO vo, BindingResult bindingResult) {
+        Context context = new Context(TokenUtil.getCloudUsername(), TokenUtil.getToken(), vo.getSiteId());
+        SsidAndBindRelationVo srv = new SsidAndBindRelationVo();
+        srv.setBindRelation(vo);
+        ApiResult result = service.checkSsidAndBindRelation(srv, context);
+
+        if(!result.isSuccess()) {
+            return result;
+        }
+
+        result = service.bindWirelessV2(vo, context);
+        return result;
+    }
+
+    @RequestMapping(value = "unbindWireless")
+    @ResponseBody
+    @ApiPermission(ApiPermission.ADMIN | ApiPermission.SITE_API)
+    public ApiResult unbindWireless(@RequestBody @Valid SsidDeviceVO vo, BindingResult bindingResult) {
+        ApiResult result = service.unbindWirelessV2(vo, new Context(TokenUtil.getCloudUsername(), TokenUtil.getToken(), vo.getSiteId()));
+        return result;
+    }
+}
