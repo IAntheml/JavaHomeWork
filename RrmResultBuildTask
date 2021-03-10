@@ -68,7 +68,7 @@ public class RrmResultBuildTask implements SchedulingConfigurer {
         RSet<Long> rrmProjectIds = redissonClient.getSet(Constant.REDIS_KEY_FOR_RRM_PROJECT_ID);
         for (Long projectId : rrmProjectIds){
             if (isInRrm(projectId)){
-                scheduledTaskRegistrar.addFixedRateTask(() -> buildSaveRrmResult(projectId),1*60*1000);
+                scheduledTaskRegistrar.addFixedDelayTask(() -> buildSaveRrmResult(projectId),1*60*1000);
             }
         }
     }
