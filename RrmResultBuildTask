@@ -1,0 +1,202 @@
+package com.tplink.ignite.nmsgprocessor.handler.tasks;
+
+import com.tplink.ignite.httplib.passthrough.Passthrough;
+import com.tplink.ignite.jeelib.snowflake.SnowflakeHolder;
+import com.tplink.ignite.module.nms.resource.dao.DeviceRepository;
+import com.tplink.ignite.module.nms.resource.domain.bean.Device;
+import com.tplink.ignite.module.nms.wireless.dao.OptimizeHistoryRepository;
+import com.tplink.ignite.module.nms.wireless.dao.OptimizeResultRepository;
+import com.tplink.ignite.module.nms.wireless.domain.bean.bean.RadioOptimizeHistory;
+import com.tplink.ignite.module.nms.wireless.domain.bean.bean.RadioOptimizeResult;
+import com.tplink.ignite.module.nms.wireless.domain.bean.bean.RadioOptimizeStatus;
+import com.tplink.ignite.nms.common.SpringContextHolder;
+import com.tplink.ignite.nmsgprocessor.task.PullRadioStatusTask;
+import com.tplink.ignite.nmsgprocessor.util.Constant;
+import com.tplink.ignite.nmsgprocessor.util.RrmConstant;
+import lombok.extern.slf4j.Slf4j;
+import org.apache.commons.lang3.concurrent.BasicThreadFactory;
+import org.redisson.api.RLock;
+import org.redisson.api.RMap;
+import org.redisson.api.RSet;
+import org.redisson.api.RedissonClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.scheduling.annotation.SchedulingConfigurer;
+import org.springframework.scheduling.config.ScheduledTaskRegistrar;
+import org.springframework.util.CollectionUtils;
+
+import javax.annotation.PreDestroy;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * @description:
+ * @author: smb_llh
+ * @time: 2021/3/10 15:18
+ */
+@Slf4j
+@Configuration
+@EnableScheduling
+public class RrmResultBuildTask implements SchedulingConfigurer {
+
+    private Logger logger = LoggerFactory.getLogger(getClass());
+
+    private ScheduledTaskRegistrar regis;
+
+    @Autowired
+    private RedissonClient redissonClient;
+
+
+    private static final ThreadPoolExecutor POLLING_RRM_START_THREAD_POOL = new ScheduledThreadPoolExecutor(10,
+            new BasicThreadFactory.Builder().namingPattern("rrm-scheduled-pool-%d").daemon(true).build());
+
+
+    @Override
+    public void configureTasks(ScheduledTaskRegistrar scheduledTaskRegistrar) {
+        scheduledTaskRegistrar.setScheduler(POLLING_RRM_START_THREAD_POOL);
+        this.regis = scheduledTaskRegistrar;
+        RSet<Long> rrmProjectIds = redissonClient.getSet(Constant.REDIS_KEY_FOR_RRM_PROJECT_ID);
+        for (Long projectId : rrmProjectIds){
+            if (isInRrm(projectId)){
+                scheduledTaskRegistrar.addFixedRateTask(() -> buildSaveRrmResult(projectId),1*60*1000);
+            }
+        }
+    }
+
+    private boolean isInRrm(Long projectId) {
+        String redisKey = Constant.REDIS_KEY_PREFIX_OPTIMIZE_PROJECT_PREFIX + projectId;
+        RMap<String, Object> projectDeviceStatusMap = redissonClient.getMap(redisKey);
+        return !CollectionUtils.isEmpty(projectDeviceStatusMap);
+    }
+
+    private void buildSaveRrmResult(Long projectId) {
+        int overtimeFlag = 300000;
+        logger.debug("current time :" + new Date().toString() + " projectId: " + projectId + " rrm research");
+        String redisKey = Constant.REDIS_KEY_PREFIX_OPTIMIZE_PROJECT_PREFIX + projectId;
+        RMap<String, Object> projectDeviceStatusMap = redissonClient.getMap(redisKey);
+        String rrmResultId = null;
+        List<Long> subDeviceIndexes = new ArrayList<>();
+        Long rrmStartTime = null;
+        List<String> deviceStatuses = new ArrayList<>();
+        List<String> supportRrmDeviceList = new ArrayList<>();
+        for (String key : projectDeviceStatusMap.keySet()) {
+            if (RrmConstant.REDIS_HASH_KEY_RRM_RESULT_ID.equals(key)) {
+                rrmResultId = (String) projectDeviceStatusMap.get(key);
+                logger.debug("REDIS_HASH_KEY_RRM_RESULT_ID :  " + rrmResultId);
+            } else if (RrmConstant.REDIS_HASH_KEY_RRM_TIME.equals(key)) {
+                rrmStartTime = (Long) projectDeviceStatusMap.get(key);
+                logger.debug("REDIS_HASH_KEY_RRM_TIME :  " + rrmStartTime);
+            } else if (RrmConstant.REDIS_HASH_KEY_RRM_DEVICE_INDEXES.equals(key)) {
+                subDeviceIndexes = (List<Long>) projectDeviceStatusMap.get(key);
+                logger.debug("REDIS_HASH_KEY_RRM_DEVICE_INDEXES :  " + subDeviceIndexes);
+            } else {
+                supportRrmDeviceList.add(key);
+                Object deviceStatusTime = projectDeviceStatusMap.get(key);
+                if (((Map) deviceStatusTime).keySet().size() != 1) {
+                    logger.debug("status map size : " + ((Map) deviceStatusTime).keySet().size());
+                    return;
+                }
+                deviceStatuses.add((String) ((Map) deviceStatusTime).keySet().iterator().next());
+            }
+        }
+        if (rrmResultId == null || CollectionUtils.isEmpty(subDeviceIndexes) || rrmStartTime == null) {
+            logger.debug("rrmResultId: " + rrmResultId + " rrmStartTime: " + rrmStartTime + " subDeviceIndexes :" + subDeviceIndexes);
+            return;
+        }
+        logger.debug("rrm time ：" + (Instant.now().toEpochMilli() - rrmStartTime) / overtimeFlag);
+        if ((Instant.now().toEpochMilli() - rrmStartTime) > overtimeFlag) {
+            logger.debug("projectId:" + projectId + " overtime build result");
+            buildRrmResult(projectId, rrmResultId,supportRrmDeviceList);
+            return;
+        }
+        for (String deviceStatus : deviceStatuses) {
+            if (!(RrmConstant.DEVICE_RRM_STATUS_FINISH.equals(deviceStatus))) {
+                logger.debug("project has device do not finish rrm, have the status :" + deviceStatus);
+                return;
+            }
+        }
+        //生成调优结果
+        buildRrmResult(projectId, rrmResultId,supportRrmDeviceList);
+    }
+
+    public void buildRrmResult(Long projectId, String rrmResultId, List<String> supportRrmDeviceList) {
+        logger.debug("build Rrm result started : " + rrmResultId);
+        DeviceRepository deviceDao = SpringContextHolder.getBean(DeviceRepository.class);
+        Passthrough passthrough = SpringContextHolder.getBean(Passthrough.class);
+        RedissonClient redissonClient = SpringContextHolder.getBean(RedissonClient.class);
+        List<Device> devices = deviceDao.findAllBySiteIdAndDeviceMacIn(projectId, supportRrmDeviceList);
+        CountDownLatch doneSignal = new CountDownLatch(devices.size());
+        for (Device device : devices){
+            POLLING_RRM_START_THREAD_POOL.execute(new PullRadioStatusTask(doneSignal,device,passthrough,redissonClient,projectId));
+        }
+        try {
+            doneSignal.await();
+        } catch (InterruptedException e) {
+            logger.info(e.getMessage());
+        }
+        OptimizeResultRepository optimizeResultDao = SpringContextHolder.getBean(OptimizeResultRepository.class);
+        OptimizeHistoryRepository optimizeHistoryDao = SpringContextHolder.getBean(OptimizeHistoryRepository.class);
+        RLock buildLock = redissonClient.getLock(RrmConstant.REDIS_KEY_FOR_RRM_RESULT_BUILD + projectId);
+        RMap<String, Map<String, Long>> resultMap = redissonClient.getMap(RrmConstant.PULL_RADIO_STATUS_MAP_KEY + projectId);
+        try {
+            buildLock.lock(20, TimeUnit.SECONDS);
+            RMap<String, Object> map = redissonClient.getMap(RrmConstant.REDIS_KEY_PREFIX_OPTIMIZE_PROJECT_PREFIX
+                    + projectId);
+            if (map == null) {
+                return;
+            }
+            //拿到结果，存储结果。
+            logger.debug("result param device list " + resultMap);
+            List<RadioOptimizeResult> radioOptimizeResults = new ArrayList<>();
+            for (Map.Entry<String,Map<String,Long>> radioEntry : resultMap.entrySet()) {
+                for (Map.Entry<String,Long> channelAmountEntry : radioEntry.getValue().entrySet()){
+                    RadioOptimizeResult radioOptimizeResult = new RadioOptimizeResult();
+                    radioOptimizeResult.setId(SnowflakeHolder.nextId());
+                    radioOptimizeResult.setProjectId(projectId);
+                    radioOptimizeResult.setOptimizeResultId(rrmResultId);
+                    radioOptimizeResult.setRadioUnit(radioEntry.getKey());
+                    radioOptimizeResult.setRadioChannel(channelAmountEntry.getKey());
+                    radioOptimizeResult.setDeviceAmount(channelAmountEntry.getValue());
+                    radioOptimizeResults.add(radioOptimizeResult);
+                }
+
+            }
+            logger.debug("save result param device list " + radioOptimizeResults.size());
+            optimizeResultDao.saveAll(radioOptimizeResults);
+            //调优结果记录更新为已完成,并将Redis缓存清除
+            logger.debug("find oldRadioOptimizeHistory");
+            RadioOptimizeHistory oldRadioOptimizeHistory = optimizeHistoryDao.findByProjectIdAndOptimizeResultId(projectId,
+                    rrmResultId);
+            logger.debug("find oldRadioOptimizeHistory " + oldRadioOptimizeHistory);
+            if (oldRadioOptimizeHistory != null) {
+                logger.info("old history is " + oldRadioOptimizeHistory.toString());
+                oldRadioOptimizeHistory.setOptimizeStatus(RadioOptimizeStatus.FINISH.toString());
+                optimizeHistoryDao.save(oldRadioOptimizeHistory);
+            }
+            logger.debug("project Map delete " + resultMap);
+            map.delete();
+            buildLock.unlock();
+        } catch (Exception e) {
+            logger.warn("exception occur when locking.");
+        } finally {
+            if (buildLock.isHeldByCurrentThread()) {
+                buildLock.unlock();
+            }
+        }
+    }
+
+    @PreDestroy
+    public void destroy() {
+        this.regis.destroy();
+    }
+}
