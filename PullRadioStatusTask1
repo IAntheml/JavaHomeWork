@@ -1,0 +1,182 @@
+package com.tplink.ignite.nmsgprocessor.task;
+
+import com.tplink.ignite.httplib.passthrough.Passthrough;
+import com.tplink.ignite.jeelib.domain.ApiResult;
+import com.tplink.ignite.jeelib.utils.JsonUtils;
+import com.tplink.ignite.module.nms.resource.domain.bean.Device;
+import com.tplink.ignite.nmsgprocessor.handler.protocol.rf.ApmngStatus;
+import com.tplink.ignite.nmsgprocessor.handler.protocol.rf.Para;
+import com.tplink.ignite.nmsgprocessor.handler.protocol.rf.RadioStatusProtocol;
+import com.tplink.ignite.nmsgprocessor.util.Constant;
+import com.tplink.ignite.nmsgprocessor.util.RrmConstant;
+import org.redisson.api.RMap;
+import org.redisson.api.RedissonClient;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.util.CollectionUtils;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
+
+/**
+ * @description:
+ * @author: smb_llh
+ * @time: 2021/3/10 19:37
+ */
+public class PullRadioStatusTask implements Runnable {
+
+    private static final Logger logger = LoggerFactory.getLogger(PullRadioStatusTask.class);
+
+    private final CountDownLatch doneSignal;
+
+    private final Device device;
+
+    private Passthrough passthrough;
+
+    private RedissonClient redissonClient;
+
+    private Long projectId;
+
+    public PullRadioStatusTask(CountDownLatch doneSignal, Device device, Passthrough passthrough, RedissonClient redissonClient, Long projectId) {
+        this.doneSignal = doneSignal;
+        this.device = device;
+        this.passthrough = passthrough;
+        this.redissonClient = redissonClient;
+        this.projectId = projectId;
+    }
+
+    @Override
+    public void run() {
+        RadioStatusProtocol radioStatusProtocol = new RadioStatusProtocol();
+        ApmngStatus apmngStatus = new ApmngStatus();
+        apmngStatus.setTable(Constant.RADIO_STATUS_ENTRY);
+        List<Object> filter = new ArrayList<>();
+        filter.add(new Object());
+        apmngStatus.setFilter(filter);
+        Para para = new Para();
+        para.setStart(String.valueOf(RrmConstant.PULL_RADIO_STATUS_START));
+        para.setEnd(String.valueOf(RrmConstant.PULL_RADIO_STATUS_END));
+        apmngStatus.setPara(para);
+        radioStatusProtocol.setMethod(RrmConstant.PULL_RADIO_STATUS_METHOD_GET);
+        radioStatusProtocol.setApmngStatus(apmngStatus);
+        Map<String, Object> protocolMap = JsonUtils.json2Map(JsonUtils.bean2Json(radioStatusProtocol));
+        logger.debug("pull radio status protocol : " + protocolMap);
+        try {
+            Thread.sleep(30*1000);
+            ApiResult apiResult = passthrough.post(device.getDeviceId(), protocolMap);
+            logger.debug("pull radio status result : " + apiResult);
+            while (true) {
+                if (apiResult.isSuccess()) {
+                    if (!parsePostResult(apiResult, Integer.parseInt(para.getEnd()))) {
+                        break;
+                    } else {
+                        para.setStart(String.valueOf(Integer.parseInt(para.getStart()) + RrmConstant.PULL_RADIO_STATUS_END + RrmConstant.PULL_RADIO_STATUS_PLUS));
+                        para.setEnd(String.valueOf(Integer.parseInt(para.getEnd()) + RrmConstant.PULL_RADIO_STATUS_END + RrmConstant.PULL_RADIO_STATUS_PLUS));
+                        apmngStatus.setPara(para);
+                        radioStatusProtocol.setApmngStatus(apmngStatus);
+                        apiResult = passthrough.post(device.getDeviceId(), JsonUtils.json2Map(JsonUtils.bean2Json(radioStatusProtocol)));
+                        logger.debug("pull radio status success result : " + apiResult);
+                    }
+                } else {
+                    para.setStart(String.valueOf(Integer.parseInt(para.getStart()) + RrmConstant.PULL_RADIO_STATUS_END + RrmConstant.PULL_RADIO_STATUS_PLUS));
+                    para.setEnd(String.valueOf(Integer.parseInt(para.getEnd()) + RrmConstant.PULL_RADIO_STATUS_END + RrmConstant.PULL_RADIO_STATUS_PLUS));
+                    apmngStatus.setPara(para);
+                    radioStatusProtocol.setApmngStatus(apmngStatus);
+                    apiResult = passthrough.post(device.getDeviceId(), JsonUtils.json2Map(JsonUtils.bean2Json(radioStatusProtocol)));
+                    logger.debug("pull radio status fail result : " + apiResult);
+                }
+            }
+        } catch (Exception e) {
+            logger.warn("", e);
+        }finally {
+            doneSignal.countDown();
+        }
+    }
+
+    private boolean parsePostResult(ApiResult apiResult, Integer end) {
+        Map<String, Object> result = (Map<String, Object>) apiResult.getResult();
+        Map<String, Object> responseData = (Map<String, Object>) result.get("responseData");
+        Map<String, Object> apStatus = (Map<String, Object>) responseData.get("apmng_status");
+        if (!CollectionUtils.isEmpty(apStatus)){
+            Map<String, Object> countMap = (Map<String, Object>) apStatus.get("count");
+            Integer apListCount = (Integer) countMap.get("ap_list");
+            List<Map<String, Object>> apStatusList = (List<Map<String, Object>>) apStatus.get("ap_list");
+            List<Map<String, Object>> statusEntryList = new ArrayList<>();
+            for (Map<String, Object> statusMapList : apStatusList) {
+                for (Object statusMap : statusMapList.values()) {
+                    String linkStatus = (String) ((Map<String, Object>) statusMap).get("link_status");
+                    List<Map<String, Object>> statusEntry = (List<Map<String, Object>>) (((Map<String, Object>) statusMap).get("rf_entry"));
+                    if (!linkStatus.equals(String.valueOf(RrmConstant.PULL_RADIO_STATUS_START))) {
+                        statusEntryList.addAll(statusEntry);
+                    }
+                }
+            }
+            buildRadioStatusMap(statusEntryList);
+            return (apListCount - end - 1) > RrmConstant.PULL_RADIO_STATUS_START;
+        }else {
+            logger.debug("parse error :" + apiResult.getMessage());
+            return false;
+        }
+
+    }
+
+    private void buildRadioStatusMap(List<Map<String, Object>> statusEntryList) {
+        RMap<String, Map<String, Long>> map = redissonClient.getMap(RrmConstant.PULL_RADIO_STATUS_MAP_KEY + projectId);
+        for (Map<String, Object> apRadioStatus : statusEntryList) {
+            String radioUnit = (String) apRadioStatus.get("freq_name");
+            radioUnit = changeRadioUnitVersion(radioUnit);
+            String radioChannel = (String) apRadioStatus.get("channel");
+            radioChannel = changeRadioChannelVersion(radioChannel);
+            if (CollectionUtils.isEmpty(map)) {
+                HashMap<String, Long> channelAmountMap = new HashMap<>();
+                channelAmountMap.put(radioChannel, Long.valueOf(RrmConstant.PULL_RADIO_STATUS_PLUS));
+                map.put(radioUnit, channelAmountMap);
+            } else {
+                Map<String, Long> channelAmountMap = map.get(radioUnit);
+                if (CollectionUtils.isEmpty(channelAmountMap)) {
+                    channelAmountMap = new HashMap<>();
+                    channelAmountMap.put(radioChannel, Long.valueOf(RrmConstant.PULL_RADIO_STATUS_PLUS));
+                    map.put(radioUnit, channelAmountMap);
+                } else {
+                    Long deviceAmount = channelAmountMap.get(radioChannel);
+                    if (deviceAmount == null) {
+                        channelAmountMap.put(radioChannel, Long.valueOf(RrmConstant.PULL_RADIO_STATUS_PLUS));
+                    } else {
+                        channelAmountMap.put(radioChannel, deviceAmount + RrmConstant.PULL_RADIO_STATUS_PLUS);
+                    }
+                    map.put(radioUnit, channelAmountMap);
+                }
+            }
+
+        }
+    }
+
+    private String changeRadioChannelVersion(String radioChannel) {
+        String regex = "^(auto)$|^([1-9])$|^(1[0-3])$|^(36)$|^(4[048])$|^(5[26])$|^(6[04])$|^(149)$|^(15[37])$|^(16[15])$";
+        Pattern p = Pattern.compile(regex);
+        Matcher matcher = p.matcher(radioChannel);
+        if (matcher.matches()){
+            return radioChannel;
+        }else {
+            return RrmConstant.RADIO_STATUS_UNKNOWN;
+        }
+
+    }
+
+    private String changeRadioUnitVersion(String radioUnit) {
+        if (radioUnit.equals(RrmConstant.DEVICE_5G_RADIO_CHANNEL)){
+            return RrmConstant.CLOUD_5G_RADIO_CHANNEL;
+        }else if (radioUnit.equals(RrmConstant.DEVICE_2G_RADIO_CHANNEL)){
+            return RrmConstant.CLOUD_2G_RADIO_CHANNEL;
+        }
+        return radioUnit;
+    }
+}
+
+
