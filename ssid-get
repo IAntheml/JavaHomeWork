@@ -1,0 +1,64 @@
+request：
+{
+	"method": "getWirelessList",
+	"params": {
+		"siteId": "53497682034950144",
+		"grid": {
+			"start": 0,
+			"limit": 20,
+			"filter": {
+				"deviceGroupId": "53497682211110912"
+			},
+			"sort": "",
+			"dir": "asc"
+		}
+	}
+}
+response：
+{
+	"result": {
+		"start": "0",
+		"limit": 20,
+		"total": "1",
+		"sort": "wirelessId",
+		"dir": "asc",
+		"searchKey": null,
+		"filter": {
+			
+			"siteId": "53497682034950144"
+		},
+		"data": [{
+			"wirelessId": "53513692544761856",
+			"siteId": "53497682034950144",
+			"ssidName": "1",
+			"ssidEnable": "on",
+			"encode": "utf8",
+			"hideWirelessNetwork": "off",
+			"staIsolation": "off",
+			"description": "",
+			"bwLimitEnable": "off",
+			"bwLimitParam": null,
+			"encryptType": "0",
+			"wpaWpa2PskParam": null,
+			"wpaWpa2Param": null,
+			"portal": null,
+			"guestNetwork": false, 
+			"bindDeviceCount": 3,
+			" bindRadioCount ": 5,
+			" bindDeviceRadioList ":,"123:234:1",
+                                      “autoBindParam”:{
+                                            "autoBindEnable":"on",
+                                            "vid":0,
+                                            "bind":"2G,5G"
+                                     }
+		}],
+		"errorMessage": null,
+		"queryConditionList": [{
+			"queryName": "wirelessId",
+			"queryValue": "",
+			"queryType": "asc"
+		}]
+	},
+	"error_code": 0
+}
+
